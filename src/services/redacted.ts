@@ -797,10 +797,15 @@ export async function getRedStatus(
 
   // Step 5: Look up artist (or browse for VA releases)
   let groups: RedArtistTorrentGroup[];
+  // Browsed groups that are credited to Various Artists
+  const vaGroupIds = new Set<number>();
 
   if (isVariousArtists(artist)) {
     // Fallback: browse by title for Various Artists
     const browseResults = await browseTorrents({ groupname: title }, apiKey);
+    for (const r of browseResults) {
+      if (isVariousArtists(decodeHtmlEntities(r.artist))) vaGroupIds.add(r.groupId);
+    }
     groups = browseResults.map((r) => ({
       groupId: r.groupId,
       groupName: r.groupName,
@@ -895,6 +900,10 @@ export async function getRedStatus(
   if (titleMatches.length === 0) {
     titleMatches = matchByTitle(filterByReleaseTypeLoosely(groups, release.formats), title);
   }
+  // Browsing finds the title for any artist, so prefer matches credited to Various Artists.
+  // Others are kept when there are none, since RED lists DJ mixes under the DJ.
+  const vaMatches = titleMatches.filter((g) => vaGroupIds.has(g.groupId));
+  if (vaMatches.length > 0) titleMatches = vaMatches;
   if (titleMatches.length === 0) {
     const requests = await searchFallbackRequests();
     return makeResult('not_uploaded', 0, requests);
