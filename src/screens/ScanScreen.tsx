@@ -9,14 +9,14 @@ import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
 import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, discogsErrorMessage } from '../services/discogs';
-import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/gazelle';
+import { getTrackerStatus, TrackerAuthError, TrackerForbiddenError } from '../services/gazelle';
 import { searchImage } from '../services/pressings';
 import { albumFromRelease } from '../services/album';
 import { albumListId, findList } from '../services/lists';
 import ReleasePicker from '../components/ReleasePicker';
 import ListPickerDialog from '../components/ListPickerDialog';
 import BarcodeDialog from '../components/BarcodeDialog';
-import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail, RedStatus } from '../types';
+import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail, TrackerStatus } from '../types';
 
 type ScanState = 'idle' | 'looking_up' | 'disambiguate' | 'result' | 'error';
 
@@ -37,10 +37,10 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const scanLockRef = useRef(false);
   const scannedBarcodeRef = useRef('');
   const cooldownRef = useRef({ barcode: '', until: 0 });
-  const [redStatus, setRedStatus] = useState<RedStatus | null>(null);
+  const [redStatus, setRedStatus] = useState<TrackerStatus | null>(null);
   const [redLoading, setRedLoading] = useState(false);
   const [redFailed, setRedFailed] = useState(false);
-  const redLookupRef = useRef<{ releaseId: number; promise: Promise<RedStatus> } | null>(null);
+  const redLookupRef = useRef<{ releaseId: number; promise: Promise<TrackerStatus> } | null>(null);
   const [releaseDetail, setReleaseDetail] = useState<DiscogsReleaseDetail | null>(null);
   const [pressingConfirmed, setPressingConfirmed] = useState(true);
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
@@ -80,7 +80,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     let cancelled = false;
     setRedLoading(true);
     setRedFailed(false);
-    const lookup = getRedStatus(releaseDetail, apiKey);
+    const lookup = getTrackerStatus('red', releaseDetail, apiKey);
     redLookupRef.current = { releaseId: releaseDetail.id, promise: lookup };
     lookup
       .then((status) => { if (!cancelled) setRedStatus(status); })
@@ -88,7 +88,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
         if (!cancelled) {
           setRedStatus(null);
           setRedFailed(true);
-          if (err instanceof RedAuthError || err instanceof RedForbiddenError) showRedError(err.title, err.message);
+          if (err instanceof TrackerAuthError || err instanceof TrackerForbiddenError) showRedError(err.title, err.message);
         }
       })
       .finally(() => { if (!cancelled) setRedLoading(false); });

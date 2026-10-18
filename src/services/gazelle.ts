@@ -1,122 +1,182 @@
 import type {
   DiscogsReleaseDetail,
   DiscogsFormat,
-  RedStatus,
-  RedRequest,
-  RedArtistTorrentGroup,
-  RedGroupDetail,
-  RedGroupTorrent,
-  RedMatchResult,
+  TrackerStatus,
+  TrackerRequest,
+  GazelleArtistTorrentGroup,
+  GazelleGroupDetail,
+  GazelleGroupTorrent,
+  TrackerMatchResult,
 } from '../types';
 import { parseDuration, filterAudioTracks, stripDiscogsDisambiguator } from './discogs';
 
-// -- Constants ------------------------------------------------------
+// -- Trackers -------------------------------------------------------
 
-const BASE_URL = 'https://redacted.sh/ajax.php';
-const RATE_LIMIT = 10;
-const RATE_WINDOW = 10_000;
+export type TrackerId = 'red';
+
+interface Tracker {
+  id: TrackerId;
+  name: string;
+  siteUrl: string;
+  rateLimit: number;
+  rateWindow: number;
+  authorization: (apiKey: string) => string;
+  forbiddenMessage: string;
+  media: Record<string, string>;               // Discogs format name to media
+  releaseTypes: Record<string, number>;        // Discogs format description to release type
+  browseReleaseTypes: Record<string, number>;  // Browse release type name to release type
+  browseTitleParam: string;
+}
+
+export const TRACKERS: Record<TrackerId, Tracker> = {
+  red: {
+    id: 'red',
+    name: 'RED',
+    siteUrl: 'https://redacted.sh',
+    rateLimit: 10,
+    rateWindow: 10_000,
+    authorization: (apiKey) => apiKey,
+    forbiddenMessage: 'The RED API key is not authorised for this action. Please make sure it is enabled for Torrents and Requests.',
+    media: {
+      'CD': 'CD', 'CDr': 'CD',
+      'Vinyl': 'Vinyl',
+      'Cassette': 'Cassette',
+      'Blu-ray': 'Blu-Ray',
+      'DVD': 'DVD',
+      'SACD': 'SACD',
+    },
+    releaseTypes: {
+      'Album': 1, 'Soundtrack': 3, 'EP': 5, 'Anthology': 6,
+      'Compilation': 7, 'Single': 9, 'Live': 11, 'Remix': 13,
+      'Mixtape': 16, 'Demo': 17, 'DJ Mix': 19,
+    },
+    browseReleaseTypes: {
+      'Album': 1, 'Soundtrack': 3, 'EP': 5, 'Anthology': 6,
+      'Compilation': 7, 'Single': 9, 'Live album': 11, 'Remix': 13,
+      'Bootleg': 14, 'Interview': 15, 'Mixtape': 16, 'Demo': 17,
+      'Concert Recording': 18, 'DJ Mix': 19, 'Unknown': 21,
+    },
+    browseTitleParam: 'groupname',
+  },
+};
+
 // Most torrent groups fetched per lookup, so a common title can't use up the rate limit
 const MAX_GROUP_FETCHES = 5;
 
-// -- Auth error guard -----------------------------------------------
-// After a 401, block all requests until the API key changes.
+// -- Errors ---------------------------------------------------------
+
+// After a 401, block all requests to that tracker until the API key changes.
 // A 403 is surfaced as a warning but does not block future requests.
-
-let blockedApiKey: string | null = null;
-
-export class RedAuthError extends Error {
-  constructor(status: number) {
-    super('The RED API key is invalid. Requests are paused to prevent an IP ban. Change your API key in Settings.');
-    this.name = 'RedAuthError';
+export class TrackerAuthError extends Error {
+  constructor(tracker: TrackerId) {
+    super(`The ${TRACKERS[tracker].name} API key is invalid. Requests are paused to prevent an IP ban. Change your API key in Settings.`);
+    this.name = 'TrackerAuthError';
     this.title = 'Careful now...';
+    this.tracker = tracker;
   }
   title: string;
+  tracker: TrackerId;
 }
 
-export class RedForbiddenError extends Error {
-  constructor() {
-    super('The RED API key is not authorised for this action. Please make sure it is enabled for Torrents and Requests.');
-    this.name = 'RedForbiddenError';
+export class TrackerForbiddenError extends Error {
+  constructor(tracker: TrackerId) {
+    super(TRACKERS[tracker].forbiddenMessage);
+    this.name = 'TrackerForbiddenError';
     this.title = 'Ei perkele!';
+    this.tracker = tracker;
   }
   title: string;
+  tracker: TrackerId;
 }
 
-// RED couldn't answer (rate limit, server error, network or an error page),
+// The tracker couldn't answer (rate limit, server error, network or an error page),
 // so the release's status is unknown rather than not uploaded.
-export class RedUnavailableError extends Error {
-  constructor() {
-    super('RED is busy or unreachable right now. Try again later.');
-    this.name = 'RedUnavailableError';
-    this.title = 'RED unavailable';
+export class TrackerUnavailableError extends Error {
+  constructor(tracker: TrackerId) {
+    super(`${TRACKERS[tracker].name} is busy or unreachable right now. Try again later.`);
+    this.name = 'TrackerUnavailableError';
+    this.title = `${TRACKERS[tracker].name} unavailable`;
+    this.tracker = tracker;
   }
   title: string;
+  tracker: TrackerId;
+}
+
+/** Errors that end a lookup instead of counting as "not found". */
+function isTrackerError(err: unknown): boolean {
+  return err instanceof TrackerAuthError || err instanceof TrackerForbiddenError || err instanceof TrackerUnavailableError;
 }
 
 // -- Rate limiter (sliding window) ----------------------------------
 
-const requestTimestamps: number[] = [];
-// Set when RED rate limits us, holding every request until its window has passed
-let pausedUntil = 0;
+interface LimiterState {
+  requestTimestamps: number[];
+  // Set when the tracker rate limits us, holding every request until its window has passed
+  pausedUntil: number;
+  blockedApiKey: string | null;
+}
+
+const limiters: Record<TrackerId, LimiterState> = {
+  red: { requestTimestamps: [], pausedUntil: 0, blockedApiKey: null },
+};
 
 /** Retry-After is in whole seconds, so wait one more to cover the rounding. */
-function retryAfterMs(res: Response): number {
+function retryAfterMs(t: Tracker, res: Response): number {
   const seconds = parseInt(res.headers.get('Retry-After') ?? '', 10);
-  return seconds >= 0 ? (seconds + 1) * 1000 : RATE_WINDOW;
+  return seconds >= 0 ? (seconds + 1) * 1000 : t.rateWindow;
 }
 
 async function rateLimitedFetch(
-  url: string,
-  init: RequestInit,
+  t: Tracker,
+  params: Record<string, string>,
   apiKey: string,
 ): Promise<Response> {
+  const state = limiters[t.id];
   // Check again after every wait, since other callers may have taken the free slot
   while (true) {
-    if (blockedApiKey !== null && blockedApiKey === apiKey) {
-      throw new RedAuthError(401);
+    if (state.blockedApiKey !== null && state.blockedApiKey === apiKey) {
+      throw new TrackerAuthError(t.id);
     }
     const now = Date.now();
-    while (requestTimestamps.length > 0 && requestTimestamps[0]! <= now - RATE_WINDOW) {
-      requestTimestamps.shift();
+    while (state.requestTimestamps.length > 0 && state.requestTimestamps[0]! <= now - t.rateWindow) {
+      state.requestTimestamps.shift();
     }
-    if (now >= pausedUntil && requestTimestamps.length < RATE_LIMIT) {
-      requestTimestamps.push(now);
+    if (now >= state.pausedUntil && state.requestTimestamps.length < t.rateLimit) {
+      state.requestTimestamps.push(now);
       break;
     }
-    const waitUntil = now < pausedUntil ? pausedUntil : requestTimestamps[0]! + RATE_WINDOW;
+    const waitUntil = now < state.pausedUntil ? state.pausedUntil : state.requestTimestamps[0]! + t.rateWindow;
     await new Promise((resolve) => setTimeout(resolve, waitUntil - now));
   }
-  const res = await fetch(url, init).catch(() => {
-    throw new RedUnavailableError();
+  const url = `${t.siteUrl}/ajax.php?${new URLSearchParams(params)}`;
+  const res = await fetch(url, { headers: { Authorization: t.authorization(apiKey) } }).catch(() => {
+    throw new TrackerUnavailableError(t.id);
   });
   if (res.status === 401) {
-    blockedApiKey = apiKey;
-    throw new RedAuthError(res.status);
+    state.blockedApiKey = apiKey;
+    throw new TrackerAuthError(t.id);
   }
   if (res.status === 403) {
-    throw new RedForbiddenError();
+    throw new TrackerForbiddenError(t.id);
   }
   if (res.status === 429) {
-    pausedUntil = Math.max(pausedUntil, Date.now() + retryAfterMs(res));
+    state.pausedUntil = Math.max(state.pausedUntil, Date.now() + retryAfterMs(t, res));
   }
   if (res.status === 429 || res.status >= 500) {
-    throw new RedUnavailableError();
+    throw new TrackerUnavailableError(t.id);
   }
   return res;
 }
 
-function headers(apiKey: string): HeadersInit {
-  return { Authorization: apiKey };
-}
-
-/** Parse a RED response. An error page or a rate limit failure means RED couldn't answer. */
-async function readJson<T extends { status: string; error?: string }>(res: Response): Promise<T> {
+/** Parse a tracker response. An error page or a rate limit failure means the tracker couldn't answer. */
+async function readJson<T extends { status: string; error?: string }>(t: Tracker, res: Response): Promise<T> {
   const data: T = await res.json().catch(() => {
-    throw new RedUnavailableError();
+    throw new TrackerUnavailableError(t.id);
   });
   if (data.status !== 'success' && /rate limit/i.test(data.error ?? '')) {
-    pausedUntil = Math.max(pausedUntil, Date.now() + RATE_WINDOW);
-    throw new RedUnavailableError();
+    const state = limiters[t.id];
+    state.pausedUntil = Math.max(state.pausedUntil, Date.now() + t.rateWindow);
+    throw new TrackerUnavailableError(t.id);
   }
   return data;
 }
@@ -128,14 +188,14 @@ interface ArtistResponse {
   response: {
     id: number;
     name: string;
-    torrentgroup: RedArtistTorrentGroup[];
+    torrentgroup: GazelleArtistTorrentGroup[];
     requests: { requestId: number; title: string; year: number; bounty: number }[];
   };
 }
 
 interface TorrentGroupResponse {
   status: string;
-  response: RedGroupDetail;
+  response: GazelleGroupDetail;
 }
 
 interface BrowseResponse {
@@ -181,52 +241,49 @@ interface RequestsResponse {
 }
 
 async function fetchArtist(
+  t: Tracker,
   name: string,
   apiKey: string,
-): Promise<{ groups: RedArtistTorrentGroup[] }> {
-  const query = new URLSearchParams({ action: 'artist', artistname: name });
-  const res = await rateLimitedFetch(`${BASE_URL}?${query}`, { headers: headers(apiKey) }, apiKey);
-  if (!res.ok) throw new Error(`RED artist lookup failed: ${res.status}`);
-  const data = await readJson<ArtistResponse>(res);
+): Promise<{ groups: GazelleArtistTorrentGroup[] }> {
+  const res = await rateLimitedFetch(t, { action: 'artist', artistname: name }, apiKey);
+  if (!res.ok) throw new Error(`${t.name} artist lookup failed: ${res.status}`);
+  const data = await readJson<ArtistResponse>(t, res);
   if (data.status !== 'success') return { groups: [] };
   return { groups: data.response.torrentgroup ?? [] };
 }
 
 async function fetchTorrentGroup(
+  t: Tracker,
   groupId: number,
   apiKey: string,
-): Promise<RedGroupDetail | null> {
-  const query = new URLSearchParams({ action: 'torrentgroup', id: String(groupId) });
-  const res = await rateLimitedFetch(`${BASE_URL}?${query}`, { headers: headers(apiKey) }, apiKey);
+): Promise<GazelleGroupDetail | null> {
+  const res = await rateLimitedFetch(t, { action: 'torrentgroup', id: String(groupId) }, apiKey);
   if (!res.ok) return null;
-  const data = await readJson<TorrentGroupResponse>(res);
+  const data = await readJson<TorrentGroupResponse>(t, res);
   if (data.status !== 'success') return null;
   return data.response;
 }
 
 async function browseTorrents(
+  t: Tracker,
   params: Record<string, string>,
   apiKey: string,
 ): Promise<BrowseResponse['response']['results']> {
-  const query = new URLSearchParams({ action: 'browse', ...params });
-  const res = await rateLimitedFetch(`${BASE_URL}?${query}`, { headers: headers(apiKey) }, apiKey);
-  if (!res.ok) throw new Error(`RED API error: ${res.status}`);
-  const data = await readJson<BrowseResponse>(res);
+  const res = await rateLimitedFetch(t, { action: 'browse', ...params }, apiKey);
+  if (!res.ok) throw new Error(`${t.name} API error: ${res.status}`);
+  const data = await readJson<BrowseResponse>(t, res);
   if (data.status !== 'success') return [];
   return data.response.results;
 }
 
 async function searchRequests(
+  t: Tracker,
   searchTerm: string,
   apiKey: string,
 ): Promise<RequestsResponse['response']['results']> {
-  const params = new URLSearchParams({
-    action: 'requests',
-    search: searchTerm,
-  });
-  const res = await rateLimitedFetch(`${BASE_URL}?${params}`, { headers: headers(apiKey) }, apiKey);
+  const res = await rateLimitedFetch(t, { action: 'requests', search: searchTerm }, apiKey);
   if (!res.ok) return [];
-  const data = await readJson<RequestsResponse>(res);
+  const data = await readJson<RequestsResponse>(t, res);
   if (data.status !== 'success') return [];
   return data.response.results;
 }
@@ -259,7 +316,7 @@ export function normalizeTrackName(name: string): string {
   return normalizeTitle(name).replace(/^\d+\s*/, '');
 }
 
-/** Decode common HTML entities that appear in RED API responses. */
+/** Decode common HTML entities that appear in tracker API responses. */
 function decodeHtmlEntities(s: string): string {
   return s
     .replace(/&amp;/g, '&')
@@ -271,42 +328,23 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&#(\d{2,5});/g, (_, code) => String.fromCodePoint(Number(code)));
 }
 
-/** Map a single Discogs format name to a RED media type string. */
-export function discogsFormatToRedMedia(formatName: string): string | null {
-  const map: Record<string, string> = {
-    'CD': 'CD', 'CDr': 'CD',
-    'Vinyl': 'Vinyl',
-    'Cassette': 'Cassette',
-    'Blu-ray': 'Blu-Ray',
-    'DVD': 'DVD',
-    'SACD': 'SACD',
-  };
-  return map[formatName] ?? null;
+/** Map a single Discogs format name to the tracker's media type string. */
+export function discogsFormatToMedia(t: Tracker, formatName: string): string | null {
+  return t.media[formatName] ?? null;
 }
 
-/** Map Discogs format descriptions to RED release type integer. */
-export function discogsDescriptionsToRedReleaseType(descriptions: string[]): number | null {
-  const map: Record<string, number> = {
-    'Album': 1, 'Soundtrack': 3, 'EP': 5, 'Anthology': 6,
-    'Compilation': 7, 'Single': 9, 'Live': 11, 'Remix': 13,
-    'Mixtape': 16, 'Demo': 17, 'DJ Mix': 19,
-  };
+/** Map Discogs format descriptions to the tracker's release type integer. */
+export function discogsDescriptionsToReleaseType(t: Tracker, descriptions: string[]): number | null {
   for (const d of descriptions) {
-    const rt = map[d];
+    const rt = t.releaseTypes[d];
     if (rt !== undefined) return rt;
   }
   return null;
 }
 
-/** Convert RED browse releaseType string to integer. */
-function releaseTypeStringToInt(s: string): number {
-  const map: Record<string, number> = {
-    'Album': 1, 'Soundtrack': 3, 'EP': 5, 'Anthology': 6,
-    'Compilation': 7, 'Single': 9, 'Live album': 11, 'Remix': 13,
-    'Bootleg': 14, 'Interview': 15, 'Mixtape': 16, 'Demo': 17,
-    'Concert Recording': 18, 'DJ Mix': 19, 'Unknown': 21,
-  };
-  return map[s] ?? 21;
+/** Convert a browse releaseType string to integer. */
+function releaseTypeStringToInt(t: Tracker, s: string): number {
+  return t.browseReleaseTypes[s] ?? 21;
 }
 
 export function isVariousArtists(artist: string): boolean {
@@ -337,12 +375,13 @@ interface TorrentCandidate {
 // -- Step 6: Filter by release type ---------------------------------
 
 function filterByReleaseType(
-  groups: RedArtistTorrentGroup[],
+  t: Tracker,
+  groups: GazelleArtistTorrentGroup[],
   discogsFormats: DiscogsFormat[],
-): RedArtistTorrentGroup[] {
+): GazelleArtistTorrentGroup[] {
   // Collect all descriptions across all Discogs formats
   const allDescs = discogsFormats.flatMap((f) => f.descriptions ?? []);
-  const releaseType = discogsDescriptionsToRedReleaseType(allDescs);
+  const releaseType = discogsDescriptionsToReleaseType(t, allDescs);
 
   // Filter out artist-role entries (1021+)
   const musicGroups = groups.filter((g) => g.releaseType < 1000);
@@ -351,7 +390,7 @@ function filterByReleaseType(
 
   // Anthology (6) and Compilation (7) are often used interchangeably.
   // Album (1) also matches Live album (11) — Discogs often tags live albums as
-  // just "Album", while RED uses the more specific "Live album" category.
+  // just "Album", while the trackers use the more specific "Live album" category.
   let equivalent: number[];
   if (releaseType === 6 || releaseType === 7) equivalent = [6, 7];
   else if (releaseType === 1) equivalent = [1, 11];
@@ -366,11 +405,12 @@ function filterByReleaseType(
 
 /** All music groups, except albums for a single or EP, which often share their name. */
 function filterByReleaseTypeLoosely(
-  groups: RedArtistTorrentGroup[],
+  t: Tracker,
+  groups: GazelleArtistTorrentGroup[],
   discogsFormats: DiscogsFormat[],
-): RedArtistTorrentGroup[] {
+): GazelleArtistTorrentGroup[] {
   const allDescs = discogsFormats.flatMap((f) => f.descriptions ?? []);
-  const releaseType = discogsDescriptionsToRedReleaseType(allDescs);
+  const releaseType = discogsDescriptionsToReleaseType(t, allDescs);
   const musicGroups = groups.filter((g) => g.releaseType < 1000);
   if (releaseType !== 5 && releaseType !== 9) return musicGroups;
   // Album, Soundtrack, Anthology, Compilation and Live album
@@ -380,13 +420,13 @@ function filterByReleaseTypeLoosely(
 // -- Step 7: Title matching -----------------------------------------
 
 function matchByTitle(
-  groups: RedArtistTorrentGroup[],
+  groups: GazelleArtistTorrentGroup[],
   discogsTitle: string,
-): RedArtistTorrentGroup[] {
+): GazelleArtistTorrentGroup[] {
   const target = normalizeTitle(discogsTitle);
 
   // Pass 1: exact normalized match, also on each part of a Discogs title
-  // given in two forms (e.g. "初恋 = Hatsukoi"), since RED may use either one
+  // given in two forms (e.g. "初恋 = Hatsukoi"), since the tracker may use either one
   const keys = [discogsTitle, ...discogsTitle.split(' = ')].map(titleKey);
   const exact = groups.filter((g) => keys.includes(titleKey(g.groupName)));
   if (exact.length > 0) return exact;
@@ -405,14 +445,15 @@ function matchByTitle(
 // -- Steps 8–9: Successive narrowing --------------------------------
 
 function filterByMedia(
+  t: Tracker,
   candidates: TorrentCandidate[],
   release: DiscogsReleaseDetail,
 ): TorrentCandidate[] {
   const formatName = release.formats[0]?.name;
   if (!formatName) return candidates;
-  const redMedia = discogsFormatToRedMedia(formatName);
-  if (!redMedia) return candidates;
-  return candidates.filter((c) => c.media === redMedia);
+  const media = discogsFormatToMedia(t, formatName);
+  if (!media) return candidates;
+  return candidates.filter((c) => c.media === media);
 }
 
 function filterByTrackCount(
@@ -424,7 +465,7 @@ function filterByTrackCount(
   const trackCount = filterAudioTracks(release.tracklist).length;
   // Bonus tracks make a different edition, so skip editions with clearly fewer files
   return candidates.filter((c) => {
-    const fileCount = parseRedFileList(c.fileList).length;
+    const fileCount = parseFileList(c.fileList).length;
     return fileCount === 0 || fileCount > trackCount - 2;
   });
 }
@@ -439,8 +480,8 @@ function filterByCatalogueNumber(
   // Pass 1: exact normalized match
   const exact = candidates.filter((c) => {
     if (!c.remasterCatalogueNumber) return false;
-    const normRed = normalizeCatNo(c.remasterCatalogueNumber);
-    return discogsCatNos.some((catno) => normalizeCatNo(catno) === normRed);
+    const normTracker = normalizeCatNo(c.remasterCatalogueNumber);
+    return discogsCatNos.some((catno) => normalizeCatNo(catno) === normTracker);
   });
   if (exact.length > 0) return exact;
 
@@ -448,15 +489,15 @@ function filterByCatalogueNumber(
   // that turn up inside unrelated catalogue numbers and barcodes
   const loose = candidates.filter((c) => {
     if (!c.remasterCatalogueNumber) return false;
-    const normRed = normalizeCatNo(c.remasterCatalogueNumber);
-    if (!normRed) return false;
+    const normTracker = normalizeCatNo(c.remasterCatalogueNumber);
+    if (!normTracker) return false;
     return discogsCatNos.some((catno) => {
       const normDisc = normalizeCatNo(catno);
-      if (Math.min(normRed.length, normDisc.length) < 4) return false;
-      return normRed.includes(normDisc) || normDisc.includes(normRed);
-    }) || (release.barcode && /^\d{6,}$/.test(normRed) && (
-      normRed.includes(normalizeCatNo(release.barcode)) ||
-      normalizeCatNo(release.barcode).includes(normRed)
+      if (Math.min(normTracker.length, normDisc.length) < 4) return false;
+      return normTracker.includes(normDisc) || normDisc.includes(normTracker);
+    }) || (release.barcode && /^\d{6,}$/.test(normTracker) && (
+      normTracker.includes(normalizeCatNo(release.barcode)) ||
+      normalizeCatNo(release.barcode).includes(normTracker)
     ));
   });
   if (loose.length > 0) return loose;
@@ -475,9 +516,9 @@ function filterByLabel(
   if (discogsLabels.length === 0) return candidates;
 
   const matched = candidates.filter((c) => {
-    const redLabel = (c.remasterRecordLabel || '').toLowerCase();
-    if (!redLabel) return false;
-    return discogsLabels.some((dl) => redLabel.includes(dl) || dl.includes(redLabel));
+    const label = (c.remasterRecordLabel || '').toLowerCase();
+    if (!label) return false;
+    return discogsLabels.some((dl) => label.includes(dl) || dl.includes(label));
   });
   return matched.length > 0 ? matched : candidates;
 }
@@ -523,12 +564,13 @@ function editionKeyOf(c: TorrentCandidate): string {
 }
 
 function narrowCandidates(
+  t: Tracker,
   candidates: TorrentCandidate[],
   release: DiscogsReleaseDetail,
 ): NarrowResult {
   const steps: ((cs: TorrentCandidate[]) => TorrentCandidate[])[] = [
     // Track count goes with media, since an edition left on its own after any step is accepted
-    (cs) => filterByTrackCount(filterByMedia(cs, release), release),
+    (cs) => filterByTrackCount(filterByMedia(t, cs, release), release),
     (cs) => filterByCatalogueNumber(cs, release),
     (cs) => filterByLabel(cs, release),
     (cs) => filterByEditionTitle(cs, release),
@@ -550,8 +592,8 @@ function narrowCandidates(
 
 // -- Steps 10–11: Track matching ------------------------------------
 
-/** Parse RED torrent fileList into audio file names. */
-function parseRedFileList(fileList: string): string[] {
+/** Parse a torrent fileList into audio file names. */
+function parseFileList(fileList: string): string[] {
   if (!fileList) return [];
   const audioExts = /\.(flac|mp3|ogg|opus|m4a|aac|wav|ape|wv|alac)$/i;
   return fileList
@@ -568,8 +610,8 @@ function parseRedFileList(fileList: string): string[] {
     });
 }
 
-/** Parse track listings from RED group description (BBCode/HTML). */
-function parseRedDescriptionTracks(
+/** Parse track listings from a group description (BBCode/HTML). */
+function parseDescriptionTracks(
   description: string,
 ): { name: string; durationSeconds: number | null }[] {
   if (!description) return [];
@@ -606,16 +648,16 @@ function parseRedDescriptionTracks(
  */
 function trackListingsMatch(
   discogsTracks: { name: string; durationSeconds: number | null }[],
-  redTracks: { name: string }[],
+  trackerTracks: { name: string }[],
   _mediaType: string,
 ): boolean {
-  if (discogsTracks.length === 0 || redTracks.length === 0) return false;
-  // RED should have at least as many tracks
-  if (redTracks.length < discogsTracks.length) return false;
+  if (discogsTracks.length === 0 || trackerTracks.length === 0) return false;
+  // The tracker should have at least as many tracks
+  if (trackerTracks.length < discogsTracks.length) return false;
 
-  // Try to match each Discogs track to a RED track by name
-  const usedRedIndices = new Set<number>();
-  const normRedNames = redTracks.map((t) => normalizeTrackName(t.name));
+  // Try to match each Discogs track to a tracker track by name
+  const usedIndices = new Set<number>();
+  const normNames = trackerTracks.map((t) => normalizeTrackName(t.name));
   let matchedCount = 0;
 
   for (const dTrack of discogsTracks) {
@@ -624,26 +666,26 @@ function trackListingsMatch(
     let bestIdx = -1;
     let bestScore = 0;
 
-    for (let i = 0; i < normRedNames.length; i++) {
-      if (usedRedIndices.has(i)) continue;
-      const normRed = normRedNames[i]!;
-      if (!normRed) continue;
+    for (let i = 0; i < normNames.length; i++) {
+      if (usedIndices.has(i)) continue;
+      const norm = normNames[i]!;
+      if (!norm) continue;
 
       // Exact match
-      if (normRed === normDiscogs) {
+      if (norm === normDiscogs) {
         bestIdx = i;
         bestScore = 3;
         break;
       }
       // One contains the other
-      if ((normRed.includes(normDiscogs) || normDiscogs.includes(normRed)) && bestScore < 2) {
+      if ((norm.includes(normDiscogs) || normDiscogs.includes(norm)) && bestScore < 2) {
         bestIdx = i;
         bestScore = 2;
       }
     }
 
     if (bestIdx >= 0) {
-      usedRedIndices.add(bestIdx);
+      usedIndices.add(bestIdx);
       matchedCount++;
     }
   }
@@ -653,12 +695,13 @@ function trackListingsMatch(
 }
 
 /**
- * Step 10: Try to match against track listings from RED torrent groups.
+ * Step 10: Try to match against track listings from the tracker's torrent groups.
  * Checks file lists and group descriptions for track data.
  */
 function matchByTrackListing(
+  t: Tracker,
   release: DiscogsReleaseDetail,
-  groupDetails: RedGroupDetail[],
+  groupDetails: GazelleGroupDetail[],
 ): TorrentCandidate[] {
   const audioTracks = filterAudioTracks(release.tracklist);
   if (audioTracks.length === 0) return [];
@@ -669,22 +712,22 @@ function matchByTrackListing(
   }));
 
   const formatName = release.formats[0]?.name ?? 'CD';
-  const media = discogsFormatToRedMedia(formatName) ?? 'CD';
+  const media = discogsFormatToMedia(t, formatName) ?? 'CD';
   const matched: TorrentCandidate[] = [];
 
   for (const group of groupDetails) {
     // Try matching against group description track listing
-    const descTracks = parseRedDescriptionTracks(group.group.bbBody || group.group.wikiBody || '');
+    const descTracks = parseDescriptionTracks(group.group.bbBody || group.group.wikiBody || '');
 
     for (const torrent of group.torrents) {
       // Filter by media first
       if (torrent.media !== media) continue;
 
       // Try file list track names
-      const fileTrackNames = parseRedFileList(torrent.fileList);
+      const fileTrackNames = parseFileList(torrent.fileList);
       if (fileTrackNames.length > 0) {
-        const redTracks = fileTrackNames.map((name) => ({ name }));
-        if (trackListingsMatch(discogsTracks, redTracks, media)) {
+        const trackerTracks = fileTrackNames.map((name) => ({ name }));
+        if (trackListingsMatch(discogsTracks, trackerTracks, media)) {
           matched.push(torrentToCandidate(torrent, group));
           continue;
         }
@@ -708,7 +751,7 @@ function matchByTrackListing(
   return matched;
 }
 
-function torrentToCandidate(torrent: RedGroupTorrent, group: RedGroupDetail): TorrentCandidate {
+function torrentToCandidate(torrent: GazelleGroupTorrent, group: GazelleGroupDetail): TorrentCandidate {
   return {
     torrentId: torrent.id,
     groupId: group.group.id,
@@ -754,12 +797,13 @@ function listText(list: string[] | string): string {
 
 /** Keep the open music requests that this release could fill. */
 function matchRequests(
+  t: Tracker,
   results: RequestsResponse['response']['results'],
   release: DiscogsReleaseDetail,
   title: string,
   groupId?: number,
-): RedRequest[] {
-  const media = discogsFormatToRedMedia(release.formats[0]?.name ?? '');
+): TrackerRequest[] {
+  const media = discogsFormatToMedia(t, release.formats[0]?.name ?? '');
   const key = titleKey(title);
   return results
     .filter((r) => !r.isFilled)
@@ -782,29 +826,30 @@ function matchRequests(
 
 /** Search requests and keep those for a specific group. */
 async function fetchRequestsForGroup(
+  t: Tracker,
   release: DiscogsReleaseDetail,
   groupName: string,
   groupId: number,
   apiKey: string,
-): Promise<RedRequest[]> {
+): Promise<TrackerRequest[]> {
   // Include the artist, since requests that aren't linked to the group are matched by title.
   // Not for several artists, as the search needs every word and "Feat." may not be there.
   const name = decodeHtmlEntities(groupName);
   const term = isVariousArtists(release.artistDisplay) || release.artists.length > 1
     ? name
     : `${release.artistDisplay} ${name}`;
-  const results = await searchRequests(term, apiKey).catch((err) => {
-    if (err instanceof RedAuthError || err instanceof RedForbiddenError || err instanceof RedUnavailableError) throw err;
+  const results = await searchRequests(t, term, apiKey).catch((err) => {
+    if (isTrackerError(err)) throw err;
     return [];
   });
-  return matchRequests(results, release, groupName, groupId);
+  return matchRequests(t, results, release, groupName, groupId);
 }
 
 // -- Main orchestrator (steps 5–11) ---------------------------------
 
 /**
  * Whether the matched edition still has no lossless torrent (24-bit counts too),
- * and whether RED marked all of its lossless torrents trumpable.
+ * and whether the tracker marked all of its lossless torrents trumpable.
  */
 function editionLossless(
   matched: TorrentCandidate,
@@ -821,14 +866,14 @@ function editionLossless(
 }
 
 function makeResult(
-  result: RedMatchResult,
+  result: TrackerMatchResult,
   otherEditionCount: number,
-  requests: RedRequest[],
+  requests: TrackerRequest[],
   trumpable = false,
   losslessMissing = false,
   matchedGroupId?: number,
   matchedTorrentId?: number,
-): RedStatus {
+): TrackerStatus {
   return {
     result,
     uploaded: result === 'uploaded',
@@ -843,21 +888,23 @@ function makeResult(
   };
 }
 
-export async function getRedStatus(
+export async function getTrackerStatus(
+  tracker: TrackerId,
   release: DiscogsReleaseDetail,
   apiKey: string,
-): Promise<RedStatus> {
+): Promise<TrackerStatus> {
+  const t = TRACKERS[tracker];
   const artist = release.artistDisplay;
   const title = release.title;
 
   // Step 5: Look up artist (or browse for VA releases)
-  let groups: RedArtistTorrentGroup[];
+  let groups: GazelleArtistTorrentGroup[];
   // Browsed groups that are credited to Various Artists
   const vaGroupIds = new Set<number>();
 
   if (isVariousArtists(artist)) {
     // Fallback: browse by title for Various Artists
-    const browseResults = await browseTorrents({ groupname: title }, apiKey);
+    const browseResults = await browseTorrents(t, { [t.browseTitleParam]: title }, apiKey);
     for (const r of browseResults) {
       if (isVariousArtists(decodeHtmlEntities(r.artist))) vaGroupIds.add(r.groupId);
     }
@@ -867,7 +914,7 @@ export async function getRedStatus(
       groupYear: r.groupYear,
       groupRecordLabel: '',
       groupCatalogueNumber: '',
-      releaseType: releaseTypeStringToInt(r.releaseType),
+      releaseType: releaseTypeStringToInt(t, r.releaseType),
       torrent: r.torrents.map((t) => ({
         id: t.torrentId,
         groupId: r.groupId,
@@ -886,12 +933,12 @@ export async function getRedStatus(
     // Deduplicate by groupId, preferring the entry with the lowest releaseType
     // (the artist endpoint uses releaseType >= 1000 for non-main roles like
     // Guest Appearance, so we need the main-artist entry to survive filtering)
-    const groupMap = new Map<number, RedArtistTorrentGroup>();
+    const groupMap = new Map<number, GazelleArtistTorrentGroup>();
 
     for (const artistCredit of release.artists) {
       const name = artistCredit.anv || stripDiscogsDisambiguator(artistCredit.name);
       try {
-        const data = await fetchArtist(name, apiKey);
+        const data = await fetchArtist(t, name, apiKey);
         for (const group of data.groups) {
           const existing = groupMap.get(group.groupId);
           if (!existing || group.releaseType < existing.releaseType) {
@@ -899,17 +946,17 @@ export async function getRedStatus(
           }
         }
       } catch (err) {
-        if (err instanceof RedAuthError || err instanceof RedForbiddenError || err instanceof RedUnavailableError) throw err;
+        if (isTrackerError(err)) throw err;
         // Individual artist not found - continue with remaining artists
       }
     }
 
     if (groupMap.size === 0) {
-      const requestResults = await searchRequests(`${artist} ${title}`, apiKey).catch((e) => {
-        if (e instanceof RedAuthError || e instanceof RedForbiddenError || e instanceof RedUnavailableError) throw e;
+      const requestResults = await searchRequests(t, `${artist} ${title}`, apiKey).catch((e) => {
+        if (isTrackerError(e)) throw e;
         return [];
       });
-      const requests = matchRequests(requestResults, release, title);
+      const requests = matchRequests(t, requestResults, release, title);
       return makeResult('not_uploaded', 0, requests);
     }
 
@@ -922,16 +969,16 @@ export async function getRedStatus(
     );
   } else {
     try {
-      const artistData = await fetchArtist(artist, apiKey);
+      const artistData = await fetchArtist(t, artist, apiKey);
       groups = artistData.groups;
     } catch (err) {
-      if (err instanceof RedAuthError || err instanceof RedForbiddenError || err instanceof RedUnavailableError) throw err;
-      // Artist not found on RED - search requests as fallback
-      const requestResults = await searchRequests(`${artist} ${title}`, apiKey).catch((e) => {
-        if (e instanceof RedAuthError || e instanceof RedForbiddenError || e instanceof RedUnavailableError) throw e;
+      if (isTrackerError(err)) throw err;
+      // Artist not found on the tracker - search requests as fallback
+      const requestResults = await searchRequests(t, `${artist} ${title}`, apiKey).catch((e) => {
+        if (isTrackerError(e)) throw e;
         return [];
       });
-      const requests = matchRequests(requestResults, release, title);
+      const requests = matchRequests(t, requestResults, release, title);
       return makeResult('not_uploaded', 0, requests);
     }
   }
@@ -939,24 +986,24 @@ export async function getRedStatus(
   // Helper: search requests (general text search, no group filter)
   const searchFallbackRequests = async () => {
     const term = isVariousArtists(artist) ? title : `${artist} ${title}`;
-    const results = await searchRequests(term, apiKey).catch((e) => {
-      if (e instanceof RedAuthError || e instanceof RedForbiddenError || e instanceof RedUnavailableError) throw e;
+    const results = await searchRequests(t, term, apiKey).catch((e) => {
+      if (isTrackerError(e)) throw e;
       return [];
     });
-    return matchRequests(results, release, title);
+    return matchRequests(t, results, release, title);
   };
 
   // Step 6: Filter by release type
-  const typeFiltered = filterByReleaseType(groups, release.formats);
+  const typeFiltered = filterByReleaseType(t, groups, release.formats);
 
-  // Step 7: Title match. Discogs and RED don't always agree on the release type
+  // Step 7: Title match. Discogs and the tracker don't always agree on the release type
   // (e.g. soundtracks are just "Album" on Discogs), so retry with a looser filter.
   let titleMatches = matchByTitle(typeFiltered, title);
   if (titleMatches.length === 0) {
-    titleMatches = matchByTitle(filterByReleaseTypeLoosely(groups, release.formats), title);
+    titleMatches = matchByTitle(filterByReleaseTypeLoosely(t, groups, release.formats), title);
   }
   // Browsing finds the title for any artist, so prefer matches credited to Various Artists.
-  // Others are kept when there are none, since RED lists DJ mixes under the DJ.
+  // Others are kept when there are none, since DJ mixes are listed under the DJ.
   const vaMatches = titleMatches.filter((g) => vaGroupIds.has(g.groupId));
   if (vaMatches.length > 0) titleMatches = vaMatches;
   if (titleMatches.length === 0) {
@@ -966,11 +1013,11 @@ export async function getRedStatus(
 
   // Phase 2: Fetch torrentgroup details for matched groups
   // This gives us remasterCatalogueNumber, fileList, description
-  const groupDetailCache = new Map<number, RedGroupDetail>();
+  const groupDetailCache = new Map<number, GazelleGroupDetail>();
   const allCandidates: TorrentCandidate[] = [];
 
   for (const group of titleMatches.slice(0, MAX_GROUP_FETCHES)) {
-    const detail = await fetchTorrentGroup(group.groupId, apiKey);
+    const detail = await fetchTorrentGroup(t, group.groupId, apiKey);
     if (!detail) continue;
     groupDetailCache.set(group.groupId, detail);
 
@@ -985,31 +1032,31 @@ export async function getRedStatus(
   }
 
   // Step 8: Successive narrowing
-  const narrowResult = narrowCandidates(allCandidates, release);
+  const narrowResult = narrowCandidates(t, allCandidates, release);
 
   if (narrowResult.result === 'single') {
     const otherEditions = countOtherEditions(narrowResult.candidate, allCandidates);
     const { losslessMissing, trumpable } = editionLossless(narrowResult.candidate, allCandidates);
-    const requests = await fetchRequestsForGroup(release, narrowResult.candidate.groupName, narrowResult.candidate.groupId, apiKey);
+    const requests = await fetchRequestsForGroup(t, release, narrowResult.candidate.groupName, narrowResult.candidate.groupId, apiKey);
     return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidate.groupId, narrowResult.candidate.torrentId);
   }
 
   // Steps 10–11: Track matching (for both 'zero' and 'multiple' outcomes)
   const groupDetails = [...groupDetailCache.values()];
-  const trackMatches = matchByTrackListing(release, groupDetails);
+  const trackMatches = matchByTrackListing(t, release, groupDetails);
 
   if (trackMatches.length >= 1) {
     const otherEditions = countOtherEditions(trackMatches[0]!, allCandidates);
     const { losslessMissing, trumpable } = editionLossless(trackMatches[0]!, allCandidates);
-    const requests = await fetchRequestsForGroup(release, trackMatches[0]!.groupName, trackMatches[0]!.groupId, apiKey);
+    const requests = await fetchRequestsForGroup(t, release, trackMatches[0]!.groupName, trackMatches[0]!.groupId, apiKey);
     return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, trackMatches[0]!.groupId, trackMatches[0]!.torrentId);
   }
 
-  // If title matched with multiple editions, treat as already on RED
+  // If title matched with multiple editions, treat as already on the tracker
   if (narrowResult.result === 'multiple') {
     const otherEditions = countOtherEditions(narrowResult.candidates[0]!, allCandidates);
     const { losslessMissing, trumpable } = editionLossless(narrowResult.candidates[0]!, allCandidates);
-    const requests = await fetchRequestsForGroup(release, narrowResult.candidates[0]!.groupName, narrowResult.candidates[0]!.groupId, apiKey);
+    const requests = await fetchRequestsForGroup(t, release, narrowResult.candidates[0]!.groupName, narrowResult.candidates[0]!.groupId, apiKey);
     return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidates[0]!.groupId, narrowResult.candidates[0]!.torrentId);
   }
 

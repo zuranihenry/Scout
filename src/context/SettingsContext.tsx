@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import type { RedRequest, Settings, ThemeMode } from '../types';
+import type { Settings, ThemeMode } from '../types';
 import { loadSettings, saveSettings } from '../services/storage';
 
 interface SettingsContextValue {

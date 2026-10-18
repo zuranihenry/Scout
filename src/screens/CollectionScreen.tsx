@@ -8,7 +8,7 @@ import * as Haptics from 'expo-haptics';
 import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
-import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/gazelle';
+import { getTrackerStatus, TrackerAuthError, TrackerForbiddenError, TrackerUnavailableError } from '../services/gazelle';
 import { fetchReleaseDetail, searchByBarcode, discogsErrorMessage } from '../services/discogs';
 import { albumFromRelease } from '../services/album';
 import { DEFAULT_LIST_ID, albumListId, countByList, findList } from '../services/lists';
@@ -170,23 +170,23 @@ export default function CollectionScreen() {
         if (!detail.artistDisplay || detail.artistDisplay === 'Unknown') {
           detail.artistDisplay = album.artist;
         }
-        const status = await getRedStatus(detail, apiKey);
+        const status = await getTrackerStatus('red', detail, apiKey);
         updateAlbum(album.id, { redStatus: status });
         updated++;
       } catch (err) {
-        if (err instanceof RedAuthError) {
+        if (err instanceof TrackerAuthError) {
           setRedSearchingIds(new Set());
           showRedError(err.title, err.message);
           stopped = true;
           break;
         }
-        if (err instanceof RedForbiddenError) {
+        if (err instanceof TrackerForbiddenError) {
           setRedSearchingIds(new Set());
           showRedError(err.title, err.message);
           stopped = true;
           break;
         }
-        if (err instanceof RedUnavailableError) {
+        if (err instanceof TrackerUnavailableError) {
           setRedSearchingIds(new Set());
           setSnackbar(err.message);
           stopped = true;

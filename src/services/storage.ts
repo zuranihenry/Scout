@@ -28,7 +28,7 @@ export async function loadCollection(): Promise<Album[]> {
   if (!json) return [];
   const albums = JSON.parse(json) as Album[];
   if (!Array.isArray(albums)) throw new Error('Stored collection is not a list');
-  // Migrate old RedStatus objects that lack the 'result' field
+  // Migrate old redStatus objects that lack the 'result' field
   for (const album of albums) {
     if (album.redStatus && !album.redStatus.result) {
       album.redStatus.result = album.redStatus.uploaded ? 'uploaded' : 'not_uploaded';

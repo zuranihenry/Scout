@@ -14,7 +14,7 @@ export interface Album {
   catalogNumber: string;
   country?: string;
   addedAt: number;
-  redStatus?: RedStatus;
+  redStatus?: TrackerStatus;
   pressingConfirmed?: boolean;  // Only false is saved, missing means confirmed
   listId?: string;              // Missing means the Collection list
 }
@@ -109,10 +109,10 @@ export interface DiscogsReleaseDetail {
   barcode: string;         // Set by caller (scanned barcode)
 }
 
-// -- RED (Redacted) types -------------------------------------------
+// -- Gazelle tracker types (RED) -------------------------------------
 
 // From action=artist - torrentgroup[].torrent[] (singular key!)
-export interface RedArtistTorrent {
+export interface GazelleArtistTorrent {
   id: number;
   groupId: number;
   media: string;
@@ -126,17 +126,17 @@ export interface RedArtistTorrent {
   fileCount: number;
 }
 
-export interface RedArtistTorrentGroup {
+export interface GazelleArtistTorrentGroup {
   groupId: number;
   groupName: string;
   groupYear: number;
   groupRecordLabel: string;
   groupCatalogueNumber: string;
   releaseType: number;     // 1=Album, 5=EP, 7=Compilation, 9=Single, etc.
-  torrent: RedArtistTorrent[];  // singular "torrent" key from API
+  torrent: GazelleArtistTorrent[];  // singular "torrent" key from API
 }
 
-export interface RedArtistRequest {
+export interface GazelleArtistRequest {
   requestId: number;
   title: string;
   year: number;
@@ -144,7 +144,7 @@ export interface RedArtistRequest {
 }
 
 // From action=torrentgroup - torrents[] (plural key!)
-export interface RedGroupTorrent {
+export interface GazelleGroupTorrent {
   id: number;
   media: string;
   format: string;
@@ -157,10 +157,10 @@ export interface RedGroupTorrent {
   fileCount: number;
   fileList: string;
   description: string;
-  trumpable?: boolean;              // Marked trumpable by RED
+  trumpable?: boolean;              // Marked trumpable by the tracker
 }
 
-export interface RedGroupDetail {
+export interface GazelleGroupDetail {
   group: {
     id: number;
     name: string;
@@ -171,12 +171,12 @@ export interface RedGroupDetail {
     bbBody: string;
     wikiBody: string;
   };
-  torrents: RedGroupTorrent[];
+  torrents: GazelleGroupTorrent[];
 }
 
-export type RedMatchResult = 'uploaded' | 'not_uploaded';
+export type TrackerMatchResult = 'uploaded' | 'not_uploaded';
 
-export interface RedRequest {
+export interface TrackerRequest {
   requestId: number;
   title: string;
   year: number;
@@ -184,14 +184,14 @@ export interface RedRequest {
   formatList: string;
 }
 
-export interface RedStatus {
-  result: RedMatchResult;
+export interface TrackerStatus {
+  result: TrackerMatchResult;
   uploaded: boolean;          // Backwards compat: result === 'uploaded'
-  trumpable: boolean;         // RED marked all of the edition's lossless torrents trumpable
+  trumpable: boolean;         // The tracker marked all of the edition's lossless torrents trumpable
   losslessMissing?: boolean;  // The edition has no lossless torrent yet
   otherEditionCount: number;
   requestCount: number;
-  requests: RedRequest[];
+  requests: TrackerRequest[];
   checkedAt: number;
   matchedGroupId?: number;
   matchedTorrentId?: number;
