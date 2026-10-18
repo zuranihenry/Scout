@@ -9,11 +9,12 @@ import type { AlbumList } from '../types';
 interface Props {
   visible: boolean;
   title: string;
+  currentListId?: string;  // Shown but can't be picked
   onSelect: (list: AlbumList) => void;
   onDismiss: () => void;
 }
 
-export default function ListPickerDialog({ visible, title, onSelect, onDismiss }: Props) {
+export default function ListPickerDialog({ visible, title, currentListId, onSelect, onDismiss }: Props) {
   const { albums, lists, createList } = useCollection();
   const [naming, setNaming] = useState(false);
   const counts = useMemo(() => countByList(albums), [albums]);
@@ -39,7 +40,8 @@ export default function ListPickerDialog({ visible, title, onSelect, onDismiss }
                     description={`${count} release${count !== 1 ? 's' : ''}`}
                     left={(props) => <List.Icon {...props} icon="folder-outline" />}
                     onPress={() => onSelect(list)}
-                    style={styles.item}
+                    disabled={list.id === currentListId}
+                    style={[styles.item, list.id === currentListId && styles.current]}
                   />
                 );
               })}
@@ -74,5 +76,8 @@ const styles = StyleSheet.create({
   },
   item: {
     paddingLeft: 8,
+  },
+  current: {
+    opacity: 0.38,
   },
 });

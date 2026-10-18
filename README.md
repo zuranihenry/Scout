@@ -12,6 +12,7 @@ A quick and easy way to manage potential uploads. Scan barcodes to look up physi
 - **Discogs lookup** - Automatically fetches release info (artist, title, cover art) from the Discogs database
 - **RED integration** - Check whether a scanned release is uploaded, has open requests, or has other editions on Redacted
 - **Collection management** - Browse, reorder (drag-and-drop), multi-select, and delete releases
+- **Custom lists** - Sort releases into your own lists, choose a list when adding a scan, and move releases between lists
 - **Theming** - Light, dark, and system-default appearance modes
 
 ## Releases

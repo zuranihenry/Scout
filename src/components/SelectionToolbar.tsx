@@ -5,6 +5,7 @@ interface Props {
   count: number;
   onDelete: () => void;
   onCancel: () => void;
+  onMove: () => void;
   onLookupRed: () => void;
   redLookupLoading: boolean;
   hasRedApiKey: boolean;
@@ -14,6 +15,7 @@ export default function SelectionToolbar({
   count,
   onDelete,
   onCancel,
+  onMove,
   onLookupRed,
   redLookupLoading,
   hasRedApiKey,
@@ -36,6 +38,7 @@ export default function SelectionToolbar({
           Search on RED
         </Button>
       )}
+      <Appbar.Action icon="folder-move-outline" onPress={onMove} accessibilityLabel="Move to another list" />
       <Button mode="text" onPress={onDelete} textColor={theme.colors.error}>
         Delete
       </Button>

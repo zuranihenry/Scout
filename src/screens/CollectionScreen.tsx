@@ -18,13 +18,15 @@ import CollectionMenu from '../components/CollectionMenu';
 import EmptyCollection from '../components/EmptyCollection';
 import ReleasePicker from '../components/ReleasePicker';
 import ListNameDialog from '../components/ListNameDialog';
+import ListPickerDialog from '../components/ListPickerDialog';
 import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
 
 export default function CollectionScreen() {
-  const { albums, lists, loadError, removeAlbums, reorder, updateAlbum, createList, renameList, deleteList } = useCollection();
+  const { albums, lists, loadError, removeAlbums, reorder, updateAlbum, moveAlbums, createList, renameList, deleteList } = useCollection();
   const { settings } = useSettings();
   const [activeListId, setActiveListId] = useState(DEFAULT_LIST_ID);
   const [nameDialog, setNameDialog] = useState<{ visible: boolean; list?: AlbumList }>({ visible: false });
+  const [moveDialogVisible, setMoveDialogVisible] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snackbar, setSnackbar] = useState('');
@@ -124,6 +126,14 @@ export default function CollectionScreen() {
       ],
     );
   }, [selectedIds, removeAlbums, exitSelectionMode]);
+
+  const handleMove = useCallback((list: AlbumList) => {
+    const count = selectedIds.size;
+    moveAlbums(Array.from(selectedIds), list.id);
+    setMoveDialogVisible(false);
+    exitSelectionMode();
+    setSnackbar(`Moved ${count} item${count > 1 ? 's' : ''} to ${list.name}`);
+  }, [selectedIds, moveAlbums, exitSelectionMode]);
 
   const handleSelectAll = useCallback(() => {
     enterSelectionWithIds(visibleAlbums.map((a) => a.id));
@@ -405,6 +415,7 @@ export default function CollectionScreen() {
               count={selectedIds.size}
               onDelete={handleDelete}
               onCancel={exitSelectionMode}
+              onMove={() => setMoveDialogVisible(true)}
               onLookupRed={handleLookupRed}
               redLookupLoading={redLookupLoading || refreshing}
               hasRedApiKey={!!settings.redApiKey}
@@ -498,6 +509,13 @@ export default function CollectionScreen() {
         list={nameDialog.list}
         onSubmit={handleListNameSubmit}
         onDismiss={() => setNameDialog((prev) => ({ ...prev, visible: false }))}
+      />
+      <ListPickerDialog
+        visible={moveDialogVisible}
+        title="Move to list"
+        currentListId={activeList.id}
+        onSelect={handleMove}
+        onDismiss={() => setMoveDialogVisible(false)}
       />
       <Snackbar visible={!!snackbar} onDismiss={() => setSnackbar('')} duration={2000}>
         {snackbar}
