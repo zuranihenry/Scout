@@ -1,6 +1,6 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { StyleSheet, BackHandler, View, Alert, RefreshControl } from 'react-native';
-import { Appbar, Snackbar, useTheme } from 'react-native-paper';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { StyleSheet, BackHandler, View, Alert, RefreshControl, ScrollView } from 'react-native';
+import { Appbar, Chip, Snackbar, useTheme } from 'react-native-paper';
 import Animated, { useAnimatedRef } from 'react-native-reanimated';
 import Sortable from 'react-native-sortables';
 import type { SortableGridRenderItem } from 'react-native-sortables';
@@ -11,17 +11,20 @@ import { useRedError } from '../context/RedErrorContext';
 import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/redacted';
 import { fetchReleaseDetail, searchByBarcode, discogsErrorMessage } from '../services/discogs';
 import { albumFromRelease } from '../services/album';
-import { DEFAULT_LIST_ID } from '../services/lists';
+import { DEFAULT_LIST_ID, albumListId, countByList, findList } from '../services/lists';
 import AlbumCard from '../components/AlbumCard';
 import SelectionToolbar from '../components/SelectionToolbar';
 import CollectionMenu from '../components/CollectionMenu';
 import EmptyCollection from '../components/EmptyCollection';
 import ReleasePicker from '../components/ReleasePicker';
-import type { Album, DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
+import ListNameDialog from '../components/ListNameDialog';
+import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
 
 export default function CollectionScreen() {
-  const { albums, loadError, removeAlbums, reorder, updateAlbum } = useCollection();
+  const { albums, lists, loadError, removeAlbums, reorder, updateAlbum, createList, renameList, deleteList } = useCollection();
   const { settings } = useSettings();
+  const [activeListId, setActiveListId] = useState(DEFAULT_LIST_ID);
+  const [nameDialog, setNameDialog] = useState<{ visible: boolean; list?: AlbumList }>({ visible: false });
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snackbar, setSnackbar] = useState('');
@@ -38,6 +41,13 @@ export default function CollectionScreen() {
   const choosingPressingRef = useRef(false);
   const { showRedError } = useRedError();
   const theme = useTheme();
+
+  const activeList = findList(lists, activeListId);
+  const visibleAlbums = useMemo(
+    () => albums.filter((a) => albumListId(a) === activeList.id),
+    [albums, activeList.id],
+  );
+  const listCounts = useMemo(() => countByList(albums), [albums]);
 
   const exitSelectionMode = useCallback(() => {
     setSelectionMode(false);
@@ -116,22 +126,22 @@ export default function CollectionScreen() {
   }, [selectedIds, removeAlbums, exitSelectionMode]);
 
   const handleSelectAll = useCallback(() => {
-    enterSelectionWithIds(albums.map((a) => a.id));
-  }, [albums, enterSelectionWithIds]);
+    enterSelectionWithIds(visibleAlbums.map((a) => a.id));
+  }, [visibleAlbums, enterSelectionWithIds]);
 
   const handleSelectNotOnRed = useCallback(() => {
-    const ids = albums.filter((a) => a.redStatus && !a.redStatus.uploaded).map((a) => a.id);
+    const ids = visibleAlbums.filter((a) => a.redStatus && !a.redStatus.uploaded).map((a) => a.id);
     if (!enterSelectionWithIds(ids)) {
       setSnackbar('No items are marked as not on RED');
     }
-  }, [albums, enterSelectionWithIds]);
+  }, [visibleAlbums, enterSelectionWithIds]);
 
   const handleSelectNoRedStatus = useCallback(() => {
-    const ids = albums.filter((a) => !a.redStatus).map((a) => a.id);
+    const ids = visibleAlbums.filter((a) => !a.redStatus).map((a) => a.id);
     if (!enterSelectionWithIds(ids)) {
       setSnackbar('All items have been checked on RED');
     }
-  }, [albums, enterSelectionWithIds]);
+  }, [visibleAlbums, enterSelectionWithIds]);
 
   const lookupRedStatuses = useCallback(async (albumsToCheck: Album[]) => {
     const apiKey = settings.redApiKey;
@@ -188,7 +198,7 @@ export default function CollectionScreen() {
   const handleLookupRed = useCallback(async () => {
     if (refreshing) return;
 
-    const selected = albums.filter((a) => selectedIds.has(a.id));
+    const selected = visibleAlbums.filter((a) => selectedIds.has(a.id));
     if (selected.length === 0) return;
 
     setRedLookupLoading(true);
@@ -200,7 +210,7 @@ export default function CollectionScreen() {
     } finally {
       setRedLookupLoading(false);
     }
-  }, [albums, selectedIds, refreshing, lookupRedStatuses]);
+  }, [visibleAlbums, selectedIds, refreshing, lookupRedStatuses]);
 
   const handleRefresh = useCallback(async () => {
     if (selectionMode || redLookupLoading || refreshing) return;
@@ -212,7 +222,7 @@ export default function CollectionScreen() {
     setRefreshing(true);
     refreshingRef.current = true;
     try {
-      const { updated, stopped } = await lookupRedStatuses(albums);
+      const { updated, stopped } = await lookupRedStatuses(visibleAlbums);
       if (!stopped) {
         setSnackbar(`Refreshed RED status for ${updated} item${updated !== 1 ? 's' : ''}`);
       }
@@ -220,7 +230,7 @@ export default function CollectionScreen() {
       refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, [albums, selectionMode, redLookupLoading, refreshing, settings.redApiKey, lookupRedStatuses]);
+  }, [visibleAlbums, selectionMode, redLookupLoading, refreshing, settings.redApiKey, lookupRedStatuses]);
 
   // AlbumCard's memo can keep an old onChoosePressing, so it reads these from refs
   const discogsTokenRef = useRef(settings.discogsToken);
@@ -302,6 +312,48 @@ export default function CollectionScreen() {
     setPickerError(null);
   }, [pickerError]);
 
+  const handleSelectList = useCallback((id: string) => {
+    exitSelectionMode();
+    setExpandedIds(new Set());
+    setActiveListId(id);
+  }, [exitSelectionMode]);
+
+  const confirmDeleteList = useCallback((list: AlbumList) => {
+    const count = listCounts.get(list.id) ?? 0;
+    Alert.alert(
+      `Delete "${list.name}"?`,
+      count > 0 ? `Its ${count} release${count !== 1 ? 's' : ''} will be moved to Collection.` : undefined,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteList(list.id);
+            if (list.id === activeList.id) handleSelectList(DEFAULT_LIST_ID);
+          },
+        },
+      ],
+    );
+  }, [listCounts, deleteList, activeList.id, handleSelectList]);
+
+  const handleListLongPress = useCallback((list: AlbumList) => {
+    Alert.alert(list.name, undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => confirmDeleteList(list) },
+      { text: 'Rename', onPress: () => setNameDialog({ visible: true, list }) },
+    ]);
+  }, [confirmDeleteList]);
+
+  const handleListNameSubmit = useCallback((name: string) => {
+    if (nameDialog.list) {
+      renameList(nameDialog.list.id, name);
+    } else {
+      handleSelectList(createList(name).id);
+    }
+    setNameDialog((prev) => ({ ...prev, visible: false }));
+  }, [nameDialog.list, renameList, createList, handleSelectList]);
+
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
 
   const toggleExpand = useCallback((id: string) => {
@@ -338,13 +390,13 @@ export default function CollectionScreen() {
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View>
         <Appbar.Header statusBarHeight={0} style={{ backgroundColor: theme.colors.elevation.level2 }}>
-          <Appbar.Content title="Collection" />
+          <Appbar.Content title={activeList.name} />
           <CollectionMenu
             onSelectAll={handleSelectAll}
             onSelectNotOnRed={handleSelectNotOnRed}
             onSelectNoRedStatus={handleSelectNoRedStatus}
             hasRedApiKey={!!settings.redApiKey}
-            disabled={loadError || albums.length === 0 || refreshing}
+            disabled={loadError || visibleAlbums.length === 0 || refreshing}
           />
         </Appbar.Header>
         {selectionMode && (
@@ -360,10 +412,43 @@ export default function CollectionScreen() {
           </View>
         )}
       </View>
-      {loadError || albums.length === 0 ? (
-        <EmptyCollection loadError={loadError} />
+      {!loadError && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.listBar}
+          contentContainerStyle={styles.listChips}
+        >
+          {lists.map((list) => (
+            <Chip
+              key={list.id}
+              mode={list.id === activeList.id ? 'flat' : 'outlined'}
+              selected={list.id === activeList.id}
+              onPress={() => handleSelectList(list.id)}
+              onLongPress={list.id === DEFAULT_LIST_ID ? undefined : () => handleListLongPress(list)}
+              disabled={selectionMode || refreshing}
+            >
+              {`${list.name} ${listCounts.get(list.id) ?? 0}`}
+            </Chip>
+          ))}
+          <Chip
+            icon="plus"
+            mode="outlined"
+            onPress={() => setNameDialog({ visible: true })}
+            disabled={selectionMode || refreshing}
+          >
+            New list
+          </Chip>
+        </ScrollView>
+      )}
+      {loadError || visibleAlbums.length === 0 ? (
+        <EmptyCollection
+          loadError={loadError}
+          listName={activeList.id !== DEFAULT_LIST_ID || albums.length > 0 ? activeList.name : undefined}
+        />
       ) : (
         <Animated.ScrollView
+          key={activeList.id}
           ref={scrollRef}
           style={{ backgroundColor: theme.colors.background }}
           contentContainerStyle={styles.list}
@@ -378,7 +463,7 @@ export default function CollectionScreen() {
           }
         >
           <Sortable.Grid
-            data={albums}
+            data={visibleAlbums}
             renderItem={renderItem}
             keyExtractor={keyExtractor}
             columns={1}
@@ -392,7 +477,7 @@ export default function CollectionScreen() {
             inactiveItemOpacity={1}
             onDragStart={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
             onDragEnd={({ fromIndex, toIndex }) => {
-              if (fromIndex !== toIndex) reorder(DEFAULT_LIST_ID, fromIndex, toIndex);
+              if (fromIndex !== toIndex) reorder(activeList.id, fromIndex, toIndex);
             }}
           />
         </Animated.ScrollView>
@@ -408,6 +493,12 @@ export default function CollectionScreen() {
         onDismiss={() => setPressingAlbum(null)}
         onErrorDismiss={handlePickerErrorDismiss}
       />
+      <ListNameDialog
+        visible={nameDialog.visible}
+        list={nameDialog.list}
+        onSubmit={handleListNameSubmit}
+        onDismiss={() => setNameDialog((prev) => ({ ...prev, visible: false }))}
+      />
       <Snackbar visible={!!snackbar} onDismiss={() => setSnackbar('')} duration={2000}>
         {snackbar}
       </Snackbar>
@@ -421,5 +512,13 @@ const styles = StyleSheet.create({
   },
   list: {
     paddingVertical: 8,
+  },
+  listBar: {
+    flexGrow: 0,
+  },
+  listChips: {
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 8,
   },
 });

@@ -2,12 +2,12 @@ import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text, useTheme } from 'react-native-paper';
 
-export default function EmptyCollection({ loadError }: { loadError?: boolean }) {
+export default function EmptyCollection({ loadError, listName }: { loadError?: boolean; listName?: string }) {
   const theme = useTheme();
   return (
     <View style={styles.container}>
-      <Text variant="headlineSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-        {loadError ? "Couldn't load your collection" : 'No releases yet'}
+      <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.onSurfaceVariant }]}>
+        {loadError ? "Couldn't load your collection" : listName ? `No releases in ${listName}` : 'No releases yet'}
       </Text>
       <Text
         variant="bodyMedium"
@@ -15,7 +15,9 @@ export default function EmptyCollection({ loadError }: { loadError?: boolean }) 
       >
         {loadError
           ? "Restart the app to try again. New scans won't be saved until it loads."
-          : 'Swipe to the Scan tab to scan your first release!'}
+          : listName
+            ? 'Swipe to the Scan tab to add releases to this list.'
+            : 'Swipe to the Scan tab to scan your first release!'}
       </Text>
     </View>
   );
@@ -27,6 +29,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 32,
+  },
+  title: {
+    textAlign: 'center',
   },
   subtitle: {
     marginTop: 8,

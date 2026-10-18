@@ -2,9 +2,36 @@ import type { Album, AlbumList } from '../types';
 
 export const DEFAULT_LIST_ID = 'collection';
 export const DEFAULT_LIST: AlbumList = { id: DEFAULT_LIST_ID, name: 'Collection' };
+export const MAX_LIST_NAME_LENGTH = 40;
 
 export function albumListId(album: Album): string {
   return album.listId ?? DEFAULT_LIST_ID;
+}
+
+/** The list with this id, or Collection if it doesn't exist. */
+export function findList(lists: AlbumList[], id: string): AlbumList {
+  return lists.find((l) => l.id === id) ?? DEFAULT_LIST;
+}
+
+export function countByList(albums: Album[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const album of albums) {
+    const id = albumListId(album);
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Why a list name can't be used, or null if it can. lists includes Collection. */
+export function listNameError(name: string, lists: AlbumList[], renamingId?: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return 'Enter a name';
+  if (trimmed.length > MAX_LIST_NAME_LENGTH) return `Use ${MAX_LIST_NAME_LENGTH} characters or fewer`;
+  const key = trimmed.toLowerCase();
+  if (lists.some((l) => l.id !== renamingId && l.name.toLowerCase() === key)) {
+    return 'There is already a list with this name';
+  }
+  return null;
 }
 
 /** A copy of the album in another list. Albums in Collection have no listId. */

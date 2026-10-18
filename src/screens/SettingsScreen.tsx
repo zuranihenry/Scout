@@ -137,7 +137,7 @@ export default function SettingsScreen() {
           onPress={() => setAboutVisible(true)}
         />
         <List.Item
-          title="Collection size"
+          title="Total releases"
           description={`${albums.length} release${albums.length !== 1 ? 's' : ''}`}
           left={(props) => <List.Icon {...props} icon="album" />}
         />
