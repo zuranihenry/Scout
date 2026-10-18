@@ -49,18 +49,22 @@ async function rateLimitedFetch(
   init: RequestInit,
   apiKey: string,
 ): Promise<Response> {
-  if (blockedApiKey !== null && blockedApiKey === apiKey) {
-    throw new RedAuthError(401);
-  }
-  const now = Date.now();
-  while (requestTimestamps.length > 0 && requestTimestamps[0]! <= now - RATE_WINDOW) {
-    requestTimestamps.shift();
-  }
-  if (requestTimestamps.length >= RATE_LIMIT) {
+  // Check again after every wait, since other callers may have taken the free slot
+  while (true) {
+    if (blockedApiKey !== null && blockedApiKey === apiKey) {
+      throw new RedAuthError(401);
+    }
+    const now = Date.now();
+    while (requestTimestamps.length > 0 && requestTimestamps[0]! <= now - RATE_WINDOW) {
+      requestTimestamps.shift();
+    }
+    if (requestTimestamps.length < RATE_LIMIT) {
+      requestTimestamps.push(now);
+      break;
+    }
     const waitUntil = requestTimestamps[0]! + RATE_WINDOW;
     await new Promise((resolve) => setTimeout(resolve, waitUntil - now));
   }
-  requestTimestamps.push(Date.now());
   const res = await fetch(url, init);
   if (res.status === 401) {
     blockedApiKey = apiKey;
