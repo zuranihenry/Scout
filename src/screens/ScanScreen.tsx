@@ -9,7 +9,7 @@ import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
 import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, discogsErrorMessage } from '../services/discogs';
-import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/redacted';
+import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/gazelle';
 import { searchImage } from '../services/pressings';
 import { albumFromRelease } from '../services/album';
 import { albumListId, findList } from '../services/lists';

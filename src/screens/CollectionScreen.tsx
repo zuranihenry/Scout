@@ -8,7 +8,7 @@ import * as Haptics from 'expo-haptics';
 import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
-import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/redacted';
+import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/gazelle';
 import { fetchReleaseDetail, searchByBarcode, discogsErrorMessage } from '../services/discogs';
 import { albumFromRelease } from '../services/album';
 import { DEFAULT_LIST_ID, albumListId, countByList, findList } from '../services/lists';
