@@ -25,6 +25,13 @@ export class DiscogsError extends Error {
   status: number;
 }
 
+export function discogsErrorMessage(err: unknown, fallback: string): string {
+  if (!(err instanceof DiscogsError)) return fallback;
+  if (err.status === 401) return 'Discogs rejected the request. Check your Discogs token in Settings.';
+  if (err.status === 429) return 'Discogs rate limit reached. Try again shortly.';
+  return fallback;
+}
+
 // -- Existing functions ---------------------------------------------
 
 export async function searchByBarcode(

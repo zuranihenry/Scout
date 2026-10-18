@@ -28,9 +28,11 @@ interface Props {
   selectionMode: boolean;
   frogModeActive: boolean;
   redSearching?: boolean;
+  pressingLoading?: boolean;
   onPress: () => void;
   onLongPress: () => void;
   onToggleExpand: () => void;
+  onChoosePressing: (album: Album) => void;
 }
 
 function AlbumCard({
@@ -40,9 +42,11 @@ function AlbumCard({
   selectionMode,
   frogModeActive,
   redSearching,
+  pressingLoading,
   onPress,
   onLongPress,
   onToggleExpand,
+  onChoosePressing,
 }: Props) {
   const theme = useTheme();
   const frogIndex = useMemo(() => Math.floor(Math.random() * frogGifs.length), []);
@@ -179,6 +183,22 @@ function AlbumCard({
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 Barcode: {album.barcode}
               </Text>
+              {album.pressingConfirmed === false && (
+                <View style={styles.editionRow}>
+                  <Icon source="help-circle-outline" size={14} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    Unconfirmed pressing ·{' '}
+                    <Text
+                      variant="bodySmall"
+                      style={{ color: theme.colors.primary, textDecorationLine: 'underline' }}
+                      onPress={selectionMode ? undefined : () => onChoosePressing(album)}
+                    >
+                      Choose pressing
+                    </Text>
+                  </Text>
+                  {pressingLoading && <ActivityIndicator size={12} />}
+                </View>
+              )}
               {isUnofficial && (
                 <View style={styles.editionRow}>
                   <Icon source="alert" size={14} color="#E65100" />
@@ -284,13 +304,13 @@ function AlbumCard({
 
 export default React.memo(AlbumCard, (prev, next) => {
   return (
-    prev.album.id === next.album.id &&
-    prev.album.redStatus === next.album.redStatus &&
+    prev.album === next.album &&
     prev.expanded === next.expanded &&
     prev.isSelected === next.isSelected &&
     prev.selectionMode === next.selectionMode &&
     prev.frogModeActive === next.frogModeActive &&
-    prev.redSearching === next.redSearching
+    prev.redSearching === next.redSearching &&
+    prev.pressingLoading === next.pressingLoading
   );
 });
 

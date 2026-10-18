@@ -19,7 +19,8 @@ import {
 interface ReleasePickerProps {
   visible: boolean;
   candidates: DiscogsSearchResult[];
-  coverMap: Map<number, string>;
+  coverMap?: Map<number, string>;
+  currentId?: number;
   loading?: boolean;
   error: string | null;
   errorRemovable: boolean;
@@ -77,6 +78,7 @@ export default function ReleasePicker({
   visible,
   candidates,
   coverMap,
+  currentId,
   loading,
   error,
   errorRemovable,
@@ -328,7 +330,7 @@ export default function ReleasePicker({
             ) : null}
             {results.map((candidate, index) => {
               const { artist, title } = parseArtistTitle(candidate.title);
-              const cover = searchImage(candidate) || coverMap.get(candidate.id);
+              const cover = searchImage(candidate) || coverMap?.get(candidate.id);
               const differing = differingDetails(candidate, shared);
               const expanded = expandedIds.has(candidate.id);
               return (
@@ -352,11 +354,18 @@ export default function ReleasePicker({
                         <Text variant="bodySmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant }}>
                           {artist}
                         </Text>
-                        {candidate.id === topId && (
+                        {(candidate.id === currentId || candidate.id === topId) && (
                           <View style={styles.badgeRow}>
-                            <Chip icon="star" compact textStyle={styles.badgeText}>
-                              Most common
-                            </Chip>
+                            {candidate.id === currentId && (
+                              <Chip icon="check" compact textStyle={styles.badgeText}>
+                                Current
+                              </Chip>
+                            )}
+                            {candidate.id === topId && (
+                              <Chip icon="star" compact textStyle={styles.badgeText}>
+                                Most common
+                              </Chip>
+                            )}
                           </View>
                         )}
                         {differing.length > 0 && (
@@ -619,6 +628,8 @@ const styles = StyleSheet.create({
   },
   badgeRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
     marginTop: 4,
   },
   badgeText: {

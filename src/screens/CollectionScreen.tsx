@@ -9,12 +9,14 @@ import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
 import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/redacted';
-import { fetchReleaseDetail } from '../services/discogs';
+import { fetchReleaseDetail, searchByBarcode, discogsErrorMessage } from '../services/discogs';
+import { albumFromRelease } from '../services/album';
 import AlbumCard from '../components/AlbumCard';
 import SelectionToolbar from '../components/SelectionToolbar';
 import CollectionMenu from '../components/CollectionMenu';
 import EmptyCollection from '../components/EmptyCollection';
-import type { Album } from '../types';
+import ReleasePicker from '../components/ReleasePicker';
+import type { Album, DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
 
 export default function CollectionScreen() {
   const { albums, loadError, removeAlbums, reorder, updateAlbum } = useCollection();
@@ -27,6 +29,12 @@ export default function CollectionScreen() {
   const refreshingRef = useRef(false);
   const [redSearchingIds, setRedSearchingIds] = useState<Set<string>>(new Set());
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [pressingAlbum, setPressingAlbum] = useState<Album | null>(null);
+  const [pressingCandidates, setPressingCandidates] = useState<DiscogsSearchResult[]>([]);
+  const [pressingLoadingId, setPressingLoadingId] = useState<string | null>(null);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerError, setPickerError] = useState<{ id: number; message: string; removable: boolean } | null>(null);
+  const choosingPressingRef = useRef(false);
   const { showRedError } = useRedError();
   const theme = useTheme();
 
@@ -213,6 +221,86 @@ export default function CollectionScreen() {
     }
   }, [albums, selectionMode, redLookupLoading, refreshing, settings.redApiKey, lookupRedStatuses]);
 
+  // AlbumCard's memo can keep an old onChoosePressing, so it reads these from refs
+  const discogsTokenRef = useRef(settings.discogsToken);
+  discogsTokenRef.current = settings.discogsToken;
+  const redBusyRef = useRef(false);
+  redBusyRef.current = refreshing || redLookupLoading;
+
+  const handleChoosePressing = useCallback(async (album: Album) => {
+    if (choosingPressingRef.current) return;
+    // A RED check that is still running would save a status for the old pressing
+    if (redBusyRef.current) {
+      setSnackbar('Wait for the RED check to finish');
+      return;
+    }
+    choosingPressingRef.current = true;
+    setPressingLoadingId(album.id);
+    try {
+      const results = await searchByBarcode(album.barcode, discogsTokenRef.current || undefined);
+      // A RED check may have started while searching
+      if (redBusyRef.current) {
+        setSnackbar('Wait for the RED check to finish');
+        return;
+      }
+      const releases = results.filter((r) => r.type === 'release');
+      if (releases.length === 0) {
+        setSnackbar('No results found for this barcode');
+        return;
+      }
+      setPressingCandidates(releases);
+      setPressingAlbum(album);
+    } catch (err) {
+      setSnackbar(discogsErrorMessage(err, 'Failed to look up barcode. Check your connection.'));
+    } finally {
+      choosingPressingRef.current = false;
+      setPressingLoadingId(null);
+    }
+  }, []);
+
+  const handleSelectPressing = useCallback(async (selected: DiscogsSearchResult, cached?: DiscogsReleaseDetail) => {
+    const album = pressingAlbum;
+    if (!album) return;
+    if (selected.id === album.discogsId) {
+      updateAlbum(album.id, { pressingConfirmed: undefined });
+      setPressingAlbum(null);
+      setSnackbar('Pressing confirmed');
+      return;
+    }
+    let detail: DiscogsReleaseDetail | null;
+    setPickerLoading(true);
+    try {
+      detail = cached ?? await fetchReleaseDetail(selected.id, settings.discogsToken || undefined);
+    } catch (err) {
+      setPickerError({ id: selected.id, message: discogsErrorMessage(err, 'Failed to fetch release details. This may be a network issue.'), removable: false });
+      return;
+    } finally {
+      setPickerLoading(false);
+    }
+    if (!detail) {
+      setPickerError({ id: selected.id, message: 'Release details are unavailable on Discogs for this pressing. This is usually due to an issue with Discogs. Please select another pressing.', removable: true });
+      return;
+    }
+    const changes = { ...albumFromRelease(selected, detail), pressingConfirmed: undefined, redStatus: undefined };
+    updateAlbum(album.id, changes);
+    setPressingAlbum(null);
+    setSnackbar('Pressing updated');
+    // The RED status was for the old pressing, so check the new one
+    setRedLookupLoading(true);
+    try {
+      await lookupRedStatuses([{ ...album, ...changes }]);
+    } finally {
+      setRedLookupLoading(false);
+    }
+  }, [pressingAlbum, settings.discogsToken, updateAlbum, lookupRedStatuses]);
+
+  const handlePickerErrorDismiss = useCallback(() => {
+    if (pickerError?.removable) {
+      setPressingCandidates((prev) => prev.filter((c) => c.id !== pickerError.id));
+    }
+    setPickerError(null);
+  }, [pickerError]);
+
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
 
   const toggleExpand = useCallback((id: string) => {
@@ -233,12 +321,14 @@ export default function CollectionScreen() {
         selectionMode={selectionMode}
         frogModeActive={settings.frogModeActive}
         redSearching={redSearchingIds.has(item.id)}
+        pressingLoading={pressingLoadingId === item.id}
         onPress={() => (selectionMode ? toggleSelect(item.id) : undefined)}
         onLongPress={() => !selectionMode && enterSelectionMode(item.id)}
         onToggleExpand={() => toggleExpand(item.id)}
+        onChoosePressing={handleChoosePressing}
       />
     ),
-    [selectionMode, selectedIds, expandedIds, toggleSelect, toggleExpand, enterSelectionMode, settings.frogModeActive, redSearchingIds],
+    [selectionMode, selectedIds, expandedIds, toggleSelect, toggleExpand, enterSelectionMode, settings.frogModeActive, redSearchingIds, pressingLoadingId, handleChoosePressing],
   );
 
   const keyExtractor = useCallback((item: Album) => item.id, []);
@@ -306,6 +396,17 @@ export default function CollectionScreen() {
           />
         </Animated.ScrollView>
       )}
+      <ReleasePicker
+        visible={!!pressingAlbum}
+        candidates={pressingCandidates}
+        currentId={pressingAlbum?.discogsId}
+        loading={pickerLoading}
+        error={pickerError?.message ?? null}
+        errorRemovable={!!pickerError?.removable}
+        onSelect={handleSelectPressing}
+        onDismiss={() => setPressingAlbum(null)}
+        onErrorDismiss={handlePickerErrorDismiss}
+      />
       <Snackbar visible={!!snackbar} onDismiss={() => setSnackbar('')} duration={2000}>
         {snackbar}
       </Snackbar>

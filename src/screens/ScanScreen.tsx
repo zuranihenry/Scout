@@ -8,7 +8,7 @@ import * as Crypto from 'expo-crypto';
 import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
-import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, DiscogsError } from '../services/discogs';
+import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, discogsErrorMessage } from '../services/discogs';
 import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/redacted';
 import { searchImage } from '../services/pressings';
 import { albumFromRelease } from '../services/album';
@@ -19,13 +19,6 @@ type ScanState = 'idle' | 'looking_up' | 'disambiguate' | 'result' | 'error';
 
 const SCAN_COOLDOWN = 3000;
 const DUPLICATE_MESSAGE = 'This edition is already in your collection';
-
-function discogsErrorMessage(err: unknown, fallback: string): string {
-  if (!(err instanceof DiscogsError)) return fallback;
-  if (err.status === 401) return 'Discogs rejected the request. Check your Discogs token in Settings.';
-  if (err.status === 429) return 'Discogs rate limit reached. Try again shortly.';
-  return fallback;
-}
 
 export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const theme = useTheme();
