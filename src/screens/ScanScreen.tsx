@@ -15,6 +15,7 @@ import { albumFromRelease } from '../services/album';
 import { albumListId, findList } from '../services/lists';
 import ReleasePicker from '../components/ReleasePicker';
 import ListPickerDialog from '../components/ListPickerDialog';
+import BarcodeDialog from '../components/BarcodeDialog';
 import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail, RedStatus } from '../types';
 
 type ScanState = 'idle' | 'looking_up' | 'disambiguate' | 'result' | 'error';
@@ -46,6 +47,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [coverMap, setCoverMap] = useState<Map<number, string>>(new Map());
   const [listPickerVisible, setListPickerVisible] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [barcodeDialogVisible, setBarcodeDialogVisible] = useState(false);
   const lastList = findList(lists, lastListId);
 
   // Pick up a permission granted in the system settings
@@ -202,6 +204,11 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     [lookupBarcode],
   );
 
+  const handleBarcodeEntered = useCallback((data: string) => {
+    setBarcodeDialogVisible(false);
+    lookupBarcode(data);
+  }, [lookupBarcode]);
+
   // The release as it will be saved
   const preview = useMemo(
     () => (result ? albumFromRelease(result, releaseDetail) : null),
@@ -332,13 +339,20 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
             facing="back"
             enableTorch={torchOn}
             barcodeScannerSettings={{ barcodeTypes: ['ean13', 'upc_a', 'upc_e'] }}
-            onBarcodeScanned={scanState === 'idle' ? handleBarcodeScanned : undefined}
+            onBarcodeScanned={scanState === 'idle' && !barcodeDialogVisible ? handleBarcodeScanned : undefined}
           />
         ) : (
           <View style={styles.camera} />
         )}
         {isActive && (
           <View style={styles.cameraButtons}>
+            <IconButton
+              icon="keyboard-outline"
+              mode="contained"
+              disabled={scanState !== 'idle'}
+              onPress={() => setBarcodeDialogVisible(true)}
+              accessibilityLabel="Enter barcode"
+            />
             <IconButton
               icon={torchOn ? 'flashlight' : 'flashlight-off'}
               mode="contained"
@@ -446,6 +460,12 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
           </View>
         </Surface>
       )}
+
+      <BarcodeDialog
+        visible={barcodeDialogVisible}
+        onSubmit={handleBarcodeEntered}
+        onDismiss={() => setBarcodeDialogVisible(false)}
+      />
 
       <ListPickerDialog
         visible={listPickerVisible}
