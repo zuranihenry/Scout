@@ -65,17 +65,23 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     return () => sub.remove();
   }, [getPermission]);
 
+  // Read through a ref so saving a key doesn't start a lookup for the open result
+  const redApiKeyRef = useRef(settings.redApiKey);
+  redApiKeyRef.current = settings.redApiKey;
+
   // Fetch RED status when release detail is available
   useEffect(() => {
-    if (!releaseDetail || !settings.redApiKey) {
+    const apiKey = redApiKeyRef.current;
+    if (!releaseDetail || !apiKey) {
       setRedStatus(null);
       setRedFailed(false);
+      setRedLoading(false);
       return;
     }
     let cancelled = false;
     setRedLoading(true);
     setRedFailed(false);
-    getRedStatus(releaseDetail, settings.redApiKey)
+    getRedStatus(releaseDetail, apiKey)
       .then((status) => { if (!cancelled) setRedStatus(status); })
       .catch((err) => {
         if (!cancelled) {
@@ -86,7 +92,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       })
       .finally(() => { if (!cancelled) setRedLoading(false); });
     return () => { cancelled = true; };
-  }, [releaseDetail, settings.redApiKey]);
+  }, [releaseDetail]);
 
   // Unlock scanning, ignoring the last barcode until it has left the frame
   const releaseScan = useCallback(() => {

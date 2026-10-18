@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Image, StyleSheet, ScrollView, Linking } from 'react-native';
 import { Text, TextInput, List, Divider, RadioButton, Portal, Dialog, Button, useTheme } from 'react-native-paper';
 import { FontAwesome6 } from '@expo/vector-icons';
@@ -14,6 +14,18 @@ export default function SettingsScreen() {
   const { settings, updateToken, updateThemeMode, updateRedApiKey, setFrogMode } = useSettings();
   const { albums } = useCollection();
   const [aboutVisible, setAboutVisible] = useState(false);
+  // Keys are saved when editing ends, so a half-typed key is never used
+  const [token, setToken] = useState(settings.discogsToken);
+  const [redApiKey, setRedApiKey] = useState(settings.redApiKey);
+
+  // Follow the saved values, which can load after this screen mounts
+  useEffect(() => {
+    setToken(settings.discogsToken);
+  }, [settings.discogsToken]);
+
+  useEffect(() => {
+    setRedApiKey(settings.redApiKey);
+  }, [settings.redApiKey]);
 
   return (
     <ScrollView
@@ -25,8 +37,9 @@ export default function SettingsScreen() {
         <View style={styles.inputContainer}>
           <TextInput
             label="Personal Access Token"
-            value={settings.discogsToken}
-            onChangeText={updateToken}
+            value={token}
+            onChangeText={setToken}
+            onBlur={() => updateToken(token.trim())}
             mode="outlined"
             secureTextEntry
             autoCapitalize="none"
@@ -58,8 +71,9 @@ export default function SettingsScreen() {
         <View style={styles.inputContainer}>
           <TextInput
             label="API Key"
-            value={settings.redApiKey}
-            onChangeText={updateRedApiKey}
+            value={redApiKey}
+            onChangeText={setRedApiKey}
+            onBlur={() => updateRedApiKey(redApiKey.trim())}
             mode="outlined"
             secureTextEntry
             autoCapitalize="none"

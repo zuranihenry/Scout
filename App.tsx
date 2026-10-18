@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useWindowDimensions, useColorScheme, BackHandler, StyleSheet } from 'react-native';
+import { useWindowDimensions, useColorScheme, BackHandler, Keyboard, StyleSheet } from 'react-native';
 import { PaperProvider } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -38,6 +38,11 @@ function AppContent() {
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
     return () => sub.remove();
   }, [handleBack]);
+
+  // Leaving a tab ends text editing, which saves the API key fields
+  useEffect(() => {
+    Keyboard.dismiss();
+  }, [index]);
 
   const renderScene = useCallback(({ route }: { route: Route }) => {
     switch (route.key) {
