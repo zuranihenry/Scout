@@ -171,9 +171,11 @@ interface RequestsResponse {
       title: string;
       year: number;
       bounty: number;
-      formatList: string;
+      categoryId?: number;
+      formatList: string[] | string;
+      mediaList?: string[] | string;
       isFilled: boolean;
-      groupId: number;
+      groupId?: number;
     }[];
   };
 }
@@ -221,7 +223,6 @@ async function searchRequests(
   const params = new URLSearchParams({
     action: 'requests',
     search: searchTerm,
-    show_filled: 'false',
   });
   const res = await rateLimitedFetch(`${BASE_URL}?${params}`, { headers: headers(apiKey) }, apiKey);
   if (!res.ok) return [];
@@ -729,33 +730,57 @@ function countOtherEditions(
 
 // -- Request matching -----------------------------------------------
 
+/** Join a request's format list for display. */
+function listText(list: string[] | string): string {
+  return Array.isArray(list) ? list.join(' / ') : list;
+}
+
+/** Keep the open music requests that this release could fill. */
 function matchRequests(
   results: RequestsResponse['response']['results'],
+  release: DiscogsReleaseDetail,
+  title: string,
   groupId?: number,
 ): RedRequest[] {
+  const media = discogsFormatToRedMedia(release.formats[0]?.name ?? '');
+  const key = titleKey(title);
   return results
     .filter((r) => !r.isFilled)
-    .filter((r) => groupId === undefined || r.groupId === groupId)
+    .filter((r) => r.categoryId === undefined || r.categoryId === 1)
+    .filter((r) => !media || !Array.isArray(r.mediaList) || r.mediaList.length === 0 ||
+      r.mediaList.includes(media) || r.mediaList.includes('Any'))
+    .filter((r) => {
+      if (groupId !== undefined && r.groupId === groupId) return true;
+      // Otherwise the title has to match, and the request can't be for another group
+      return (groupId === undefined || !r.groupId) && titleKey(r.title) === key;
+    })
     .map((r) => ({
       requestId: r.requestId,
       title: r.title,
       year: r.year,
       bounty: r.bounty,
-      formatList: r.formatList,
+      formatList: listText(r.formatList),
     }));
 }
 
-/** Search requests and filter to those linked to a specific group. */
+/** Search requests and keep those for a specific group. */
 async function fetchRequestsForGroup(
+  release: DiscogsReleaseDetail,
   groupName: string,
   groupId: number,
   apiKey: string,
 ): Promise<RedRequest[]> {
-  const results = await searchRequests(groupName, apiKey).catch((err) => {
+  // Include the artist, since requests that aren't linked to the group are matched by title.
+  // Not for several artists, as the search needs every word and "Feat." may not be there.
+  const name = decodeHtmlEntities(groupName);
+  const term = isVariousArtists(release.artistDisplay) || release.artists.length > 1
+    ? name
+    : `${release.artistDisplay} ${name}`;
+  const results = await searchRequests(term, apiKey).catch((err) => {
     if (err instanceof RedAuthError || err instanceof RedForbiddenError || err instanceof RedUnavailableError) throw err;
     return [];
   });
-  return matchRequests(results, groupId);
+  return matchRequests(results, release, groupName, groupId);
 }
 
 // -- Main orchestrator (steps 5–11) ---------------------------------
@@ -854,7 +879,7 @@ export async function getRedStatus(
         if (e instanceof RedAuthError || e instanceof RedForbiddenError || e instanceof RedUnavailableError) throw e;
         return [];
       });
-      const requests = matchRequests(requestResults);
+      const requests = matchRequests(requestResults, release, title);
       return makeResult('not_uploaded', 0, requests);
     }
 
@@ -876,7 +901,7 @@ export async function getRedStatus(
         if (e instanceof RedAuthError || e instanceof RedForbiddenError || e instanceof RedUnavailableError) throw e;
         return [];
       });
-      const requests = matchRequests(requestResults);
+      const requests = matchRequests(requestResults, release, title);
       return makeResult('not_uploaded', 0, requests);
     }
   }
@@ -888,7 +913,7 @@ export async function getRedStatus(
       if (e instanceof RedAuthError || e instanceof RedForbiddenError || e instanceof RedUnavailableError) throw e;
       return [];
     });
-    return matchRequests(results);
+    return matchRequests(results, release, title);
   };
 
   // Step 6: Filter by release type
@@ -935,7 +960,7 @@ export async function getRedStatus(
   if (narrowResult.result === 'single') {
     const otherEditions = countOtherEditions(narrowResult.candidate, allCandidates);
     const trumpable = isEditionTrumpable(narrowResult.candidate, allCandidates);
-    const requests = await fetchRequestsForGroup(narrowResult.candidate.groupName, narrowResult.candidate.groupId, apiKey);
+    const requests = await fetchRequestsForGroup(release, narrowResult.candidate.groupName, narrowResult.candidate.groupId, apiKey);
     return makeResult('uploaded', otherEditions, requests, trumpable, narrowResult.candidate.groupId, narrowResult.candidate.torrentId);
   }
 
@@ -946,7 +971,7 @@ export async function getRedStatus(
   if (trackMatches.length >= 1) {
     const otherEditions = countOtherEditions(trackMatches[0]!, allCandidates);
     const trumpable = isEditionTrumpable(trackMatches[0]!, allCandidates);
-    const requests = await fetchRequestsForGroup(trackMatches[0]!.groupName, trackMatches[0]!.groupId, apiKey);
+    const requests = await fetchRequestsForGroup(release, trackMatches[0]!.groupName, trackMatches[0]!.groupId, apiKey);
     return makeResult('uploaded', otherEditions, requests, trumpable, trackMatches[0]!.groupId, trackMatches[0]!.torrentId);
   }
 
@@ -954,7 +979,7 @@ export async function getRedStatus(
   if (narrowResult.result === 'multiple') {
     const otherEditions = countOtherEditions(narrowResult.candidates[0]!, allCandidates);
     const trumpable = isEditionTrumpable(narrowResult.candidates[0]!, allCandidates);
-    const requests = await fetchRequestsForGroup(narrowResult.candidates[0]!.groupName, narrowResult.candidates[0]!.groupId, apiKey);
+    const requests = await fetchRequestsForGroup(release, narrowResult.candidates[0]!.groupName, narrowResult.candidates[0]!.groupId, apiKey);
     return makeResult('uploaded', otherEditions, requests, trumpable, narrowResult.candidates[0]!.groupId, narrowResult.candidates[0]!.torrentId);
   }
 
