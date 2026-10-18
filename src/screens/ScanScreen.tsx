@@ -45,6 +45,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
   const [coverMap, setCoverMap] = useState<Map<number, string>>(new Map());
   const [listPickerVisible, setListPickerVisible] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
   const lastList = findList(lists, lastListId);
 
   // Pick up a permission granted in the system settings
@@ -54,6 +55,11 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     });
     return () => sub.remove();
   }, [getPermission]);
+
+  // Leaving the tab turns the torch off
+  useEffect(() => {
+    if (!isActive) setTorchOn(false);
+  }, [isActive]);
 
   // Read through a ref so saving a key doesn't start a lookup for the open result
   const redApiKeyRef = useRef(settings.redApiKey);
@@ -324,11 +330,24 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
           <CameraView
             style={styles.camera}
             facing="back"
+            enableTorch={torchOn}
             barcodeScannerSettings={{ barcodeTypes: ['ean13', 'upc_a', 'upc_e'] }}
             onBarcodeScanned={scanState === 'idle' ? handleBarcodeScanned : undefined}
           />
         ) : (
           <View style={styles.camera} />
+        )}
+        {isActive && (
+          <View style={styles.cameraButtons}>
+            <IconButton
+              icon={torchOn ? 'flashlight' : 'flashlight-off'}
+              mode="contained"
+              selected={torchOn}
+              disabled={scanState !== 'idle'}
+              onPress={() => setTorchOn((prev) => !prev)}
+              accessibilityLabel={torchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
+            />
+          </View>
         )}
         {scanState === 'looking_up' && (
           <View style={styles.overlay}>
@@ -510,6 +529,12 @@ const styles = StyleSheet.create({
   },
   camera: {
     flex: 1,
+  },
+  cameraButtons: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    flexDirection: 'row',
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
