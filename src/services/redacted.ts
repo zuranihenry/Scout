@@ -232,9 +232,9 @@ async function searchRequests(
 
 // -- Normalization utilities ----------------------------------------
 
-/** Strip separators, leading zeros, and lowercase for catalogue number comparison. */
+/** Strip separators and the leading zeros of each number, and lowercase for catalogue number comparison. */
 export function normalizeCatNo(s: string): string {
-  return s.replace(/[\s\-_.\/]/g, '').replace(/^0+/, '').replace(/0+$/, '').toLowerCase();
+  return s.replace(/[\s\-_.\/]/g, '').replace(/(^|\D)0+(?=\d)/g, '$1').toLowerCase();
 }
 
 /** Normalize a title for comparison: lowercase, strip non-alphanumeric, collapse spaces. */
@@ -428,15 +428,17 @@ function filterByCatalogueNumber(
   });
   if (exact.length > 0) return exact;
 
-  // Pass 2: loose substring match (bidirectional)
+  // Pass 2: loose substring match (bidirectional), skipping short values
+  // that turn up inside unrelated catalogue numbers and barcodes
   const loose = candidates.filter((c) => {
     if (!c.remasterCatalogueNumber) return false;
     const normRed = normalizeCatNo(c.remasterCatalogueNumber);
     if (!normRed) return false;
     return discogsCatNos.some((catno) => {
       const normDisc = normalizeCatNo(catno);
+      if (Math.min(normRed.length, normDisc.length) < 4) return false;
       return normRed.includes(normDisc) || normDisc.includes(normRed);
-    }) || (release.barcode && (
+    }) || (release.barcode && /^\d{6,}$/.test(normRed) && (
       normRed.includes(normalizeCatNo(release.barcode)) ||
       normalizeCatNo(release.barcode).includes(normRed)
     ));
