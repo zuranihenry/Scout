@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback, useDeferredValue } from 'react';
 import { View, Image, ScrollView, Pressable, Keyboard, StyleSheet } from 'react-native';
-import { ActivityIndicator, Portal, Dialog, Button, Chip, Menu, Text, TextInput, Divider, useTheme, type MD3Theme } from 'react-native-paper';
+import { ActivityIndicator, Portal, Dialog, Button, Chip, IconButton, Menu, Text, TextInput, Divider, useTheme, type MD3Theme } from 'react-native-paper';
 import type { DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
 import { useSettings } from '../context/SettingsContext';
 import { parseArtistTitle, stripDiscogsDisambiguator, fetchReleaseDetail, DiscogsError } from '../services/discogs';
@@ -12,6 +12,7 @@ import {
   formatNames,
   searchImage,
   matchesDiscQuery,
+  groupIdentifiers,
   type PressingDetailKey,
 } from '../services/pressings';
 
@@ -90,9 +91,11 @@ export default function ReleasePicker({
   const discQuery = useDeferredValue(query);
   // Release details fetched while the picker is open, kept for later sessions
   const detailsRef = useRef(new Map<number, DiscogsReleaseDetail | null>());
+  const pendingRef = useRef(new Map<number, Promise<void>>());
   const prefetchRef = useRef<Promise<void>>(Promise.resolve());
   const [detailsVersion, setDetailsVersion] = useState(0);
   const [prefetchState, setPrefetchState] = useState<'idle' | 'loading' | 'limited'>('idle');
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
 
   // Reset filters and search when the picker opens, so removing a candidate keeps them
   const [prevVisible, setPrevVisible] = useState(visible);
@@ -101,6 +104,7 @@ export default function ReleasePicker({
     if (visible) {
       setFilters(emptyFilters);
       setQuery('');
+      setExpandedIds(new Set());
     }
   }
 
@@ -140,10 +144,22 @@ export default function ReleasePicker({
   );
   const shared = useMemo(() => sharedDetails(results), [results]);
 
-  const loadDetail = useCallback(async (id: number) => {
-    const detail = await fetchReleaseDetail(id, token);
-    detailsRef.current.set(id, detail);
-    setDetailsVersion((v) => v + 1);
+  // Fetch a release's details once, sharing a request that is already running
+  const loadDetail = useCallback((id: number) => {
+    let request = pendingRef.current.get(id);
+    if (!request) {
+      request = fetchReleaseDetail(id, token)
+        .then((detail) => {
+          detailsRef.current.set(id, detail);
+        })
+        .finally(() => {
+          pendingRef.current.delete(id);
+          setDetailsVersion((v) => v + 1);
+        });
+      pendingRef.current.set(id, request);
+      setDetailsVersion((v) => v + 1);
+    }
+    return request;
   }, [token]);
 
   // Once the filters leave a few candidates, fetch their details so the disc
@@ -193,6 +209,18 @@ export default function ReleasePicker({
   const select = (candidate: DiscogsSearchResult) => {
     Keyboard.dismiss();
     onSelect(candidate, detailsRef.current.get(candidate.id) ?? undefined);
+  };
+
+  const toggleExpanded = (id: number) => {
+    if (!expandedIds.has(id) && !detailsRef.current.has(id)) {
+      loadDetail(id).catch(() => {});
+    }
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   // Each dropdown shows values from candidates filtered by the OTHER active filters
@@ -300,6 +328,7 @@ export default function ReleasePicker({
               const { artist, title } = parseArtistTitle(candidate.title);
               const cover = searchImage(candidate) || coverMap.get(candidate.id);
               const differing = differingDetails(candidate, shared);
+              const expanded = expandedIds.has(candidate.id);
               return (
                 <React.Fragment key={candidate.id}>
                   {index > 0 && <Divider />}
@@ -335,7 +364,22 @@ export default function ReleasePicker({
                             ))}
                           </View>
                         )}
+                        {expanded && (
+                          <PressingDetails
+                            detail={detailsRef.current.get(candidate.id)}
+                            loading={pendingRef.current.has(candidate.id)}
+                            onRetry={() => loadDetail(candidate.id).catch(() => {})}
+                            theme={theme}
+                          />
+                        )}
                       </View>
+                      <IconButton
+                        icon={expanded ? 'chevron-up' : 'chevron-down'}
+                        size={20}
+                        onPress={() => toggleExpanded(candidate.id)}
+                        style={styles.expandButton}
+                        accessibilityLabel={expanded ? 'Hide pressing details' : 'Show pressing details'}
+                      />
                     </View>
                   </Pressable>
                 </React.Fragment>
@@ -388,6 +432,66 @@ function InfoRow({ label, value, theme }: {
       >
         {value}
       </Text>
+    </View>
+  );
+}
+
+function PressingDetails({ detail, loading, onRetry, theme }: {
+  detail: DiscogsReleaseDetail | null | undefined;
+  loading: boolean;
+  onRetry: () => void;
+  theme: MD3Theme;
+}) {
+  if (detail === undefined) {
+    return loading ? (
+      <ActivityIndicator size="small" style={styles.detailsLoading} />
+    ) : (
+      <Text variant="bodySmall" style={[styles.pressingDetails, { color: theme.colors.error }]} onPress={onRetry}>
+        Couldn't load details. Tap to try again.
+      </Text>
+    );
+  }
+  if (!detail) {
+    return (
+      <Text variant="bodySmall" style={[styles.pressingDetails, { color: theme.colors.onSurfaceVariant }]}>
+        No details on Discogs
+      </Text>
+    );
+  }
+
+  const formats = detail.formats.map((f) =>
+    [Number(f.qty) > 1 ? `${f.qty} × ${f.name}` : f.name, ...(f.descriptions ?? []), f.text]
+      .filter(Boolean)
+      .join(', '),
+  );
+  const notes = detail.notes?.trim();
+  return (
+    <View style={styles.pressingDetails}>
+      {groupIdentifiers(detail).map((group) => (
+        <DetailSection key={group.title} title={group.title} lines={group.values} theme={theme} />
+      ))}
+      {formats.length > 0 && <DetailSection title="Format" lines={formats} theme={theme} />}
+      {notes ? <DetailSection title="Notes" lines={[notes]} numberOfLines={4} theme={theme} /> : null}
+    </View>
+  );
+}
+
+function DetailSection({ title, lines, numberOfLines, theme }: {
+  title: string;
+  lines: string[];
+  numberOfLines?: number;
+  theme: MD3Theme;
+}) {
+  return (
+    <View>
+      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+        {title}
+      </Text>
+      {lines.map((line, i) => (
+        <Text key={i} variant="bodySmall" numberOfLines={numberOfLines}>
+          {line}
+        </Text>
+      ))}
     </View>
   );
 }
@@ -488,9 +592,20 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  expandButton: {
+    margin: 0,
+  },
   detailBlock: {
     marginTop: 4,
     gap: 2,
+  },
+  pressingDetails: {
+    marginTop: 8,
+    gap: 6,
+  },
+  detailsLoading: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
   },
   badgeRow: {
     flexDirection: 'row',

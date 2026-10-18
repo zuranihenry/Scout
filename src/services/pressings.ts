@@ -110,3 +110,35 @@ export function matchesDiscQuery(
   }
   return fields.some((f) => !!f && compact(f).includes(q));
 }
+
+// -- Identifiers ----------------------------------------------------
+
+export interface IdentifierGroup {
+  title: string;
+  values: string[];
+}
+
+const IDENTIFIER_GROUPS: { match: string; title: string }[] = [
+  { match: 'matrix', title: 'Matrix / Runout' },
+  { match: 'mastering sid', title: 'Mastering SID' },
+  { match: 'mould sid', title: 'Mould SID' },
+  { match: 'label code', title: 'Label Code' },
+  { match: 'rights society', title: 'Rights Society' },
+];
+
+/** A release's identifiers grouped by type, in a fixed order with the rest under Other. */
+export function groupIdentifiers(detail: DiscogsReleaseDetail): IdentifierGroup[] {
+  const groups: IdentifierGroup[] = IDENTIFIER_GROUPS.map(({ title }) => ({ title, values: [] }));
+  const other: IdentifierGroup = { title: 'Other', values: [] };
+  for (const { type, value, description } of detail.identifiers) {
+    // Every candidate has the scanned barcode, so it doesn't tell them apart
+    if (!value || type.toLowerCase() === 'barcode') continue;
+    const index = IDENTIFIER_GROUPS.findIndex(({ match }) => type.toLowerCase().includes(match));
+    if (index === -1) {
+      other.values.push(`${type}${description ? ` (${description})` : ''}: ${value}`);
+    } else {
+      groups[index]!.values.push(description ? `${description}: ${value}` : value);
+    }
+  }
+  return [...groups, other].filter((g) => g.values.length > 0);
+}
