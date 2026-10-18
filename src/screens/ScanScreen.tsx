@@ -38,7 +38,7 @@ function discogsErrorMessage(err: unknown, fallback: string): string {
 
 export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const theme = useTheme();
-  const { addAlbum, hasBarcode } = useCollection();
+  const { addAlbum, updateAlbum, hasBarcode } = useCollection();
   const { settings, setFrogMode } = useSettings();
   const { showRedError } = useRedError();
   const [permission, requestPermission, getPermission] = useCameraPermissions();
@@ -53,6 +53,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [redStatus, setRedStatus] = useState<RedStatus | null>(null);
   const [redLoading, setRedLoading] = useState(false);
   const [redFailed, setRedFailed] = useState(false);
+  const redLookupRef = useRef<{ releaseId: number; promise: Promise<RedStatus> } | null>(null);
   const [releaseDetail, setReleaseDetail] = useState<DiscogsReleaseDetail | null>(null);
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
   const [coverMap, setCoverMap] = useState<Map<number, string>>(new Map());
@@ -73,6 +74,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   useEffect(() => {
     const apiKey = redApiKeyRef.current;
     if (!releaseDetail || !apiKey) {
+      redLookupRef.current = null;
       setRedStatus(null);
       setRedFailed(false);
       setRedLoading(false);
@@ -81,7 +83,9 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     let cancelled = false;
     setRedLoading(true);
     setRedFailed(false);
-    getRedStatus(releaseDetail, apiKey)
+    const lookup = getRedStatus(releaseDetail, apiKey);
+    redLookupRef.current = { releaseId: releaseDetail.id, promise: lookup };
+    lookup
       .then((status) => { if (!cancelled) setRedStatus(status); })
       .catch((err) => {
         if (!cancelled) {
@@ -223,12 +227,19 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       redStatus: redStatus ?? undefined,
     };
     addAlbum(album);
+    // Still checking RED, so save the result to the album once it arrives
+    const lookup = redLookupRef.current;
+    if (!redStatus && lookup && lookup.releaseId === releaseDetail?.id) {
+      lookup.promise
+        .then((status) => updateAlbum(album.id, { redStatus: status }))
+        .catch(() => {});
+    }
     setLastAdded(album);
     setResult(null);
     setReleaseDetail(null);
     releaseScan();
     setSnackbar(`Added "${title}" to collection`);
-  }, [result, releaseDetail, redStatus, addAlbum, releaseScan]);
+  }, [result, releaseDetail, redStatus, addAlbum, updateAlbum, releaseScan]);
 
   const handleDismiss = useCallback(() => {
     setResult(null);
