@@ -137,6 +137,7 @@ export interface RedGroupTorrent {
   fileCount: number;
   fileList: string;
   description: string;
+  trumpable?: boolean;              // Marked trumpable by RED
 }
 
 export interface RedGroupDetail {
@@ -166,7 +167,8 @@ export interface RedRequest {
 export interface RedStatus {
   result: RedMatchResult;
   uploaded: boolean;          // Backwards compat: result === 'uploaded'
-  trumpable: boolean;
+  trumpable: boolean;         // RED marked all of the edition's lossless torrents trumpable
+  losslessMissing?: boolean;  // The edition has no lossless torrent yet
   otherEditionCount: number;
   requestCount: number;
   requests: RedRequest[];

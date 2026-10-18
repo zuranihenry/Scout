@@ -331,6 +331,7 @@ interface TorrentCandidate {
   fileCount: number;
   fileList: string;
   description: string;
+  trumpable?: boolean;
 }
 
 // -- Step 6: Filter by release type ---------------------------------
@@ -708,6 +709,7 @@ function torrentToCandidate(torrent: RedGroupTorrent, group: RedGroupDetail): To
     fileCount: torrent.fileCount,
     fileList: torrent.fileList,
     description: torrent.description,
+    trumpable: torrent.trumpable,
   };
 }
 
@@ -785,11 +787,22 @@ async function fetchRequestsForGroup(
 
 // -- Main orchestrator (steps 5–11) ---------------------------------
 
-function isEditionTrumpable(matched: TorrentCandidate, allCandidates: TorrentCandidate[]): boolean {
+/**
+ * Whether the matched edition still has no lossless torrent (24-bit counts too),
+ * and whether RED marked all of its lossless torrents trumpable.
+ */
+function editionLossless(
+  matched: TorrentCandidate,
+  allCandidates: TorrentCandidate[],
+): { losslessMissing: boolean; trumpable: boolean } {
   const key = editionKeyOf(matched);
-  return !allCandidates.some(
-    (c) => editionKeyOf(c) === key && c.encoding === 'Lossless',
+  const lossless = allCandidates.filter(
+    (c) => editionKeyOf(c) === key && c.encoding.includes('Lossless'),
   );
+  return {
+    losslessMissing: lossless.length === 0,
+    trumpable: lossless.length > 0 && lossless.every((c) => c.trumpable),
+  };
 }
 
 function makeResult(
@@ -797,6 +810,7 @@ function makeResult(
   otherEditionCount: number,
   requests: RedRequest[],
   trumpable = false,
+  losslessMissing = false,
   matchedGroupId?: number,
   matchedTorrentId?: number,
 ): RedStatus {
@@ -804,6 +818,7 @@ function makeResult(
     result,
     uploaded: result === 'uploaded',
     trumpable,
+    losslessMissing,
     otherEditionCount,
     requestCount: requests.length,
     requests,
@@ -959,9 +974,9 @@ export async function getRedStatus(
 
   if (narrowResult.result === 'single') {
     const otherEditions = countOtherEditions(narrowResult.candidate, allCandidates);
-    const trumpable = isEditionTrumpable(narrowResult.candidate, allCandidates);
+    const { losslessMissing, trumpable } = editionLossless(narrowResult.candidate, allCandidates);
     const requests = await fetchRequestsForGroup(release, narrowResult.candidate.groupName, narrowResult.candidate.groupId, apiKey);
-    return makeResult('uploaded', otherEditions, requests, trumpable, narrowResult.candidate.groupId, narrowResult.candidate.torrentId);
+    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidate.groupId, narrowResult.candidate.torrentId);
   }
 
   // Steps 10–11: Track matching (for both 'zero' and 'multiple' outcomes)
@@ -970,17 +985,17 @@ export async function getRedStatus(
 
   if (trackMatches.length >= 1) {
     const otherEditions = countOtherEditions(trackMatches[0]!, allCandidates);
-    const trumpable = isEditionTrumpable(trackMatches[0]!, allCandidates);
+    const { losslessMissing, trumpable } = editionLossless(trackMatches[0]!, allCandidates);
     const requests = await fetchRequestsForGroup(release, trackMatches[0]!.groupName, trackMatches[0]!.groupId, apiKey);
-    return makeResult('uploaded', otherEditions, requests, trumpable, trackMatches[0]!.groupId, trackMatches[0]!.torrentId);
+    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, trackMatches[0]!.groupId, trackMatches[0]!.torrentId);
   }
 
   // If title matched with multiple editions, treat as already on RED
   if (narrowResult.result === 'multiple') {
     const otherEditions = countOtherEditions(narrowResult.candidates[0]!, allCandidates);
-    const trumpable = isEditionTrumpable(narrowResult.candidates[0]!, allCandidates);
+    const { losslessMissing, trumpable } = editionLossless(narrowResult.candidates[0]!, allCandidates);
     const requests = await fetchRequestsForGroup(release, narrowResult.candidates[0]!.groupName, narrowResult.candidates[0]!.groupId, apiKey);
-    return makeResult('uploaded', otherEditions, requests, trumpable, narrowResult.candidates[0]!.groupId, narrowResult.candidates[0]!.torrentId);
+    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidates[0]!.groupId, narrowResult.candidates[0]!.torrentId);
   }
 
   const requests = await searchFallbackRequests();

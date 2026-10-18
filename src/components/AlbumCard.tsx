@@ -122,6 +122,11 @@ function AlbumCard({
               >
                 {album.redStatus.uploaded ? 'Already on RED' : 'Uploadable'}
               </Chip>
+              {album.redStatus.losslessMissing && (
+                <Chip icon="music-note-plus" compact style={[styles.redBadgeChip, { backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }]} textStyle={styles.chipText}>
+                  No FLAC yet
+                </Chip>
+              )}
               {album.redStatus.trumpable && (
                 <Chip icon="chevron-double-up" compact style={[styles.redBadgeChip, { backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }]} textStyle={styles.chipText}>
                   Trumpable
@@ -211,6 +216,14 @@ function AlbumCard({
                       {album.redStatus.uploaded ? 'Already on RED' : 'Uploadable'}
                     </Text>
                   </Pressable>
+                  {album.redStatus.losslessMissing && (
+                    <View style={styles.editionRow}>
+                      <Icon source="music-note-plus" size={14} color="#9C7C00" />
+                      <Text variant="bodySmall" style={{ color: '#9C7C00' }}>
+                        No FLAC yet
+                      </Text>
+                    </View>
+                  )}
                   {album.redStatus.trumpable && (
                     <View style={styles.editionRow}>
                       <Icon source="chevron-double-up" size={14} color="#9C7C00" />

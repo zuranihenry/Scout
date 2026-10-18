@@ -373,6 +373,11 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
                   >
                     {redStatus.uploaded ? 'Already on RED' : 'Not uploaded yet!'}
                   </Chip>
+                  {redStatus.losslessMissing && (
+                    <Chip icon="music-note-plus" compact style={{ backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }} textStyle={styles.chipText}>
+                      No FLAC yet
+                    </Chip>
+                  )}
                   {redStatus.trumpable && (
                     <Chip icon="chevron-double-up" compact style={{ backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }} textStyle={styles.chipText}>
                       Trumpable
