@@ -10,6 +10,7 @@ import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
 import { searchByBarcode, parseArtistTitle, fetchReleaseDetail, fetchReleaseImages, DiscogsError } from '../services/discogs';
 import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/redacted';
+import { searchImage } from '../services/pressings';
 import ReleasePicker from '../components/ReleasePicker';
 import type { Album, DiscogsSearchResult, DiscogsReleaseDetail, RedStatus } from '../types';
 
@@ -165,10 +166,11 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
           setCandidates(releases);
           setCoverMap(new Map());
           setScanState('disambiguate');
-          // Fetch one cover per unique title in background
+          // Fetch one cover per unique title in background, for titles the search has no image for
+          const titlesWithImage = new Set(releases.filter((r) => searchImage(r)).map((r) => r.title));
           const titleToFirst = new Map<string, number>();
           for (const r of releases) {
-            if (!titleToFirst.has(r.title)) titleToFirst.set(r.title, r.id);
+            if (!titlesWithImage.has(r.title) && !titleToFirst.has(r.title)) titleToFirst.set(r.title, r.id);
           }
           for (const [releaseTitle, releaseId] of titleToFirst) {
             fetchReleaseImages(releaseId, token)

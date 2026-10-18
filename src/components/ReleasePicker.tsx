@@ -1,8 +1,17 @@
 import React, { useState, useMemo } from 'react';
 import { View, Image, ScrollView, Pressable, StyleSheet } from 'react-native';
-import { ActivityIndicator, Portal, Dialog, Button, Menu, Text, TextInput, Divider, useTheme, type MD3Theme } from 'react-native-paper';
+import { ActivityIndicator, Portal, Dialog, Button, Chip, Menu, Text, TextInput, Divider, useTheme, type MD3Theme } from 'react-native-paper';
 import type { DiscogsSearchResult } from '../types';
 import { parseArtistTitle, stripDiscogsDisambiguator } from '../services/discogs';
+import {
+  sortByPopularity,
+  mostCommonId,
+  sharedDetails,
+  differingDetails,
+  formatNames,
+  searchImage,
+  type PressingDetailKey,
+} from '../services/pressings';
 
 interface ReleasePickerProps {
   visible: boolean;
@@ -19,12 +28,13 @@ interface ReleasePickerProps {
 /** Extract unique non-empty values from an array accessor on candidates. */
 function uniqueValues(
   candidates: DiscogsSearchResult[],
-  accessor: (c: DiscogsSearchResult) => string | undefined,
+  accessor: (c: DiscogsSearchResult) => string | string[] | undefined,
 ): string[] {
   const set = new Set<string>();
   for (const c of candidates) {
-    const v = accessor(c);
-    if (v) set.add(v);
+    for (const v of [accessor(c)].flat()) {
+      if (v) set.add(v);
+    }
   }
   return [...set].sort();
 }
@@ -51,6 +61,14 @@ interface Filters {
 
 const emptyFilters: Filters = { title: null, artist: null, format: null, year: null, label: null, country: null };
 
+const detailLabels: Record<PressingDetailKey, string> = {
+  label: 'Label',
+  catno: 'Cat#',
+  format: 'Format',
+  country: 'Country',
+  year: 'Year',
+};
+
 export default function ReleasePicker({
   visible,
   candidates,
@@ -72,12 +90,15 @@ export default function ReleasePicker({
     setFilters(emptyFilters);
   }
 
+  const sorted = useMemo(() => sortByPopularity(candidates), [candidates]);
+  const topId = useMemo(() => mostCommonId(candidates), [candidates]);
+
   // Apply a subset of filters (excluding one key) to get candidates for that key's dropdown
   const applyFilters = useMemo(() => {
-    const parsed = new Map(candidates.map((c) => [c.id, parseArtistTitle(c.title)] as const));
+    const parsed = new Map(sorted.map((c) => [c.id, parseArtistTitle(c.title)] as const));
     const matchesTitle = (c: DiscogsSearchResult) => !filters.title || parsed.get(c.id)?.title === filters.title;
     const matchesArtist = (c: DiscogsSearchResult) => !filters.artist || parsed.get(c.id)?.artist === filters.artist;
-    const matchesFormat = (c: DiscogsSearchResult) => !filters.format || c.format[0] === filters.format;
+    const matchesFormat = (c: DiscogsSearchResult) => !filters.format || formatNames(c).includes(filters.format);
     const matchesYear = (c: DiscogsSearchResult) => !filters.year || c.year === filters.year;
     const matchesLabel = (c: DiscogsSearchResult) => !filters.label || (c.label ?? []).some(
       (l) => stripDiscogsDisambiguator(l) === filters.label,
@@ -85,10 +106,10 @@ export default function ReleasePicker({
     const matchesCountry = (c: DiscogsSearchResult) => !filters.country || c.country === filters.country;
 
     const allDropdown = [matchesTitle, matchesArtist, matchesFormat, matchesYear, matchesLabel, matchesCountry];
-    const without = (skip: number) => candidates.filter((c) => allDropdown.every((fn, i) => i === skip || fn(c)));
+    const without = (skip: number) => sorted.filter((c) => allDropdown.every((fn, i) => i === skip || fn(c)));
 
     return {
-      all: candidates.filter((c) => allDropdown.every((fn) => fn(c))),
+      all: sorted.filter((c) => allDropdown.every((fn) => fn(c))),
       exceptTitle: without(0),
       exceptArtist: without(1),
       exceptFormat: without(2),
@@ -96,14 +117,15 @@ export default function ReleasePicker({
       exceptLabel: without(4),
       exceptCountry: without(5),
     };
-  }, [candidates, filters]);
+  }, [sorted, filters]);
 
   const filtered = applyFilters.all;
+  const shared = useMemo(() => sharedDetails(filtered), [filtered]);
 
   // Each dropdown shows values from candidates filtered by the OTHER active filters
   const titles = uniqueValues(applyFilters.exceptTitle, (c) => parseArtistTitle(c.title).title || undefined);
   const artists = uniqueValues(applyFilters.exceptArtist, (c) => parseArtistTitle(c.title).artist || undefined);
-  const formats = uniqueValues(applyFilters.exceptFormat, (c) => c.format[0]);
+  const formats = uniqueValues(applyFilters.exceptFormat, formatNames);
   const years = uniqueValues(applyFilters.exceptYear, (c) => c.year || undefined);
   const labels = uniqueLabels(applyFilters.exceptLabel);
   const countries = uniqueValues(applyFilters.exceptCountry, (c) => c.country);
@@ -167,19 +189,21 @@ export default function ReleasePicker({
             <Divider />
 
             {/* Results */}
-            {filtered.length > 0 && (
+            {shared.length > 0 ? (
+              <View style={[styles.sharedCard, { backgroundColor: theme.colors.surfaceVariant }]}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                  All {filtered.length} results: {shared.map((d) => d.value).join(' · ')}
+                </Text>
+              </View>
+            ) : filtered.length > 0 ? (
               <Text variant="labelSmall" style={[styles.resultCount, { color: theme.colors.onSurfaceVariant }]}>
                 {filtered.length} result{filtered.length !== 1 ? 's' : ''}
               </Text>
-            )}
+            ) : null}
             {filtered.map((candidate, index) => {
               const { artist, title } = parseArtistTitle(candidate.title);
-              const cover = coverMap.get(candidate.id);
-              const strippedLabels = [...new Set(
-                (candidate.label ?? [])
-                  .map(stripDiscogsDisambiguator)
-                  .filter(Boolean),
-              )];
+              const cover = searchImage(candidate) || coverMap.get(candidate.id);
+              const differing = differingDetails(candidate, shared);
               return (
                 <React.Fragment key={candidate.id}>
                   {index > 0 && <Divider />}
@@ -201,21 +225,20 @@ export default function ReleasePicker({
                         <Text variant="bodySmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant }}>
                           {artist}
                         </Text>
-                        <View style={styles.detailBlock}>
-                          {strippedLabels.length > 0 && (
-                            <InfoRow label="Label" value={strippedLabels.join(', ')} theme={theme} />
-                          )}
-                          {candidate.catno ? (
-                            <InfoRow label="Cat#" value={candidate.catno} theme={theme} />
-                          ) : null}
-                          <InfoRow label="Format" value={candidate.format.join(', ') || 'Unknown'} theme={theme} />
-                          {candidate.country ? (
-                            <InfoRow label="Country" value={candidate.country} theme={theme} />
-                          ) : null}
-                          {candidate.year ? (
-                            <InfoRow label="Year" value={candidate.year} theme={theme} />
-                          ) : null}
-                        </View>
+                        {candidate.id === topId && (
+                          <View style={styles.badgeRow}>
+                            <Chip icon="star" compact textStyle={styles.badgeText}>
+                              Most common
+                            </Chip>
+                          </View>
+                        )}
+                        {differing.length > 0 && (
+                          <View style={styles.detailBlock}>
+                            {differing.map((d) => (
+                              <InfoRow key={d.key} label={detailLabels[d.key]} value={d.value} theme={theme} />
+                            ))}
+                          </View>
+                        )}
                       </View>
                     </View>
                   </Pressable>
@@ -366,10 +389,24 @@ const styles = StyleSheet.create({
     marginTop: 4,
     gap: 2,
   },
+  badgeRow: {
+    flexDirection: 'row',
+    marginTop: 4,
+  },
+  badgeText: {
+    fontSize: 11,
+  },
   resultCount: {
     paddingHorizontal: 24,
     paddingTop: 8,
     paddingBottom: 4,
+  },
+  sharedCard: {
+    marginHorizontal: 24,
+    marginTop: 8,
+    marginBottom: 4,
+    padding: 8,
+    borderRadius: 8,
   },
   infoRow: {
     flexDirection: 'row',

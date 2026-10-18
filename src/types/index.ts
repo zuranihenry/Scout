@@ -32,6 +32,8 @@ export interface DiscogsSearchResult {
   type: string;            // "release", "master", etc.
   country?: string;
   label?: string[];
+  formats?: DiscogsFormat[];
+  community?: { have?: number; want?: number };
 }
 
 export interface DiscogsSearchResponse {

@@ -31,7 +31,7 @@ export async function searchByBarcode(
   barcode: string,
   token?: string,
 ): Promise<DiscogsSearchResult[]> {
-  const url = `${BASE_URL}/database/search?barcode=${encodeURIComponent(barcode)}&type=release`;
+  const url = `${BASE_URL}/database/search?barcode=${encodeURIComponent(barcode)}&type=release&per_page=100`;
   const res = await fetch(url, { headers: headers(token) });
   if (!res.ok) throw new DiscogsError(res.status);
   const data: DiscogsSearchResponse = await res.json();
