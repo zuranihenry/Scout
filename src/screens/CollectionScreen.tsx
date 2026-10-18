@@ -11,6 +11,7 @@ import { useRedError } from '../context/RedErrorContext';
 import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/redacted';
 import { fetchReleaseDetail, searchByBarcode, discogsErrorMessage } from '../services/discogs';
 import { albumFromRelease } from '../services/album';
+import { DEFAULT_LIST_ID } from '../services/lists';
 import AlbumCard from '../components/AlbumCard';
 import SelectionToolbar from '../components/SelectionToolbar';
 import CollectionMenu from '../components/CollectionMenu';
@@ -391,7 +392,7 @@ export default function CollectionScreen() {
             inactiveItemOpacity={1}
             onDragStart={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
             onDragEnd={({ fromIndex, toIndex }) => {
-              if (fromIndex !== toIndex) reorder(fromIndex, toIndex);
+              if (fromIndex !== toIndex) reorder(DEFAULT_LIST_ID, fromIndex, toIndex);
             }}
           />
         </Animated.ScrollView>

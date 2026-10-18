@@ -16,6 +16,19 @@ export interface Album {
   addedAt: number;
   redStatus?: RedStatus;
   pressingConfirmed?: boolean;  // Only false is saved, missing means confirmed
+  listId?: string;              // Missing means the Collection list
+}
+
+// -- Lists (persisted) ----------------------------------------------
+
+export interface AlbumList {
+  id: string;
+  name: string;
+}
+
+export interface StoredLists {
+  lists: AlbumList[];  // Custom lists, Collection is built in
+  lastListId: string;  // The list scans were last added to
 }
 
 // -- Discogs types --------------------------------------------------
