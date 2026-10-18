@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
-import { View, Image, ScrollView, Pressable, StyleSheet } from 'react-native';
+import React, { useState, useMemo, useEffect, useRef, useCallback, useDeferredValue } from 'react';
+import { View, Image, ScrollView, Pressable, Keyboard, StyleSheet } from 'react-native';
 import { ActivityIndicator, Portal, Dialog, Button, Chip, Menu, Text, TextInput, Divider, useTheme, type MD3Theme } from 'react-native-paper';
-import type { DiscogsSearchResult } from '../types';
-import { parseArtistTitle, stripDiscogsDisambiguator } from '../services/discogs';
+import type { DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
+import { useSettings } from '../context/SettingsContext';
+import { parseArtistTitle, stripDiscogsDisambiguator, fetchReleaseDetail, DiscogsError } from '../services/discogs';
 import {
   sortByPopularity,
   mostCommonId,
@@ -10,6 +11,7 @@ import {
   differingDetails,
   formatNames,
   searchImage,
+  matchesDiscQuery,
   type PressingDetailKey,
 } from '../services/pressings';
 
@@ -21,7 +23,7 @@ interface ReleasePickerProps {
   error: string | null;
   errorRemovable: boolean;
   onErrorDismiss: () => void;
-  onSelect: (result: DiscogsSearchResult) => void;
+  onSelect: (result: DiscogsSearchResult, detail?: DiscogsReleaseDetail) => void;
   onDismiss: () => void;
 }
 
@@ -81,13 +83,25 @@ export default function ReleasePicker({
   onDismiss,
 }: ReleasePickerProps) {
   const theme = useTheme();
+  const { settings } = useSettings();
+  const token = settings.discogsToken || undefined;
   const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [query, setQuery] = useState('');
+  const discQuery = useDeferredValue(query);
+  // Release details fetched while the picker is open, kept for later sessions
+  const detailsRef = useRef(new Map<number, DiscogsReleaseDetail | null>());
+  const prefetchRef = useRef<Promise<void>>(Promise.resolve());
+  const [detailsVersion, setDetailsVersion] = useState(0);
+  const [prefetchState, setPrefetchState] = useState<'idle' | 'loading' | 'limited'>('idle');
 
-  // Reset filters when candidates change (new scan)
-  const [prevCandidates, setPrevCandidates] = useState(candidates);
-  if (candidates !== prevCandidates) {
-    setPrevCandidates(candidates);
-    setFilters(emptyFilters);
+  // Reset filters and search when the picker opens, so removing a candidate keeps them
+  const [prevVisible, setPrevVisible] = useState(visible);
+  if (visible !== prevVisible) {
+    setPrevVisible(visible);
+    if (visible) {
+      setFilters(emptyFilters);
+      setQuery('');
+    }
   }
 
   const sorted = useMemo(() => sortByPopularity(candidates), [candidates]);
@@ -120,7 +134,66 @@ export default function ReleasePicker({
   }, [sorted, filters]);
 
   const filtered = applyFilters.all;
-  const shared = useMemo(() => sharedDetails(filtered), [filtered]);
+  const results = useMemo(
+    () => filtered.filter((c) => matchesDiscQuery(c, detailsRef.current.get(c.id) ?? undefined, discQuery)),
+    [filtered, discQuery, detailsVersion],
+  );
+  const shared = useMemo(() => sharedDetails(results), [results]);
+
+  const loadDetail = useCallback(async (id: number) => {
+    const detail = await fetchReleaseDetail(id, token);
+    detailsRef.current.set(id, detail);
+    setDetailsVersion((v) => v + 1);
+  }, [token]);
+
+  // Once the filters leave a few candidates, fetch their details so the disc
+  // search can also match identifiers and notes. One request at a time to go
+  // easy on Discogs' rate limit; editing the search retries after a 429.
+  const detailLimit = token ? 20 : 10;
+  const prefetchKey = query.trim() && filtered.length <= detailLimit
+    ? filtered.map((c) => c.id).join(',')
+    : '';
+
+  useEffect(() => {
+    const ids = prefetchKey.split(',').filter(Boolean).map(Number).filter((id) => !detailsRef.current.has(id));
+    if (!visible || ids.length === 0) return;
+    let cancelled = false;
+    const previous = prefetchRef.current;
+    setPrefetchState('loading');
+    prefetchRef.current = (async () => {
+      // Let a cancelled run finish its request first
+      await previous;
+      for (const id of ids) {
+        if (cancelled) return;
+        if (detailsRef.current.has(id)) continue;
+        try {
+          await loadDetail(id);
+        } catch (err) {
+          if (err instanceof DiscogsError && err.status === 429) {
+            if (!cancelled) setPrefetchState('limited');
+            return;
+          }
+        }
+      }
+      if (!cancelled) setPrefetchState('idle');
+    })();
+    return () => {
+      cancelled = true;
+      setPrefetchState('idle');
+    };
+  }, [visible, prefetchKey, query, loadDetail]);
+
+  let searchHint = '';
+  if (prefetchState === 'loading') searchHint = 'Searching pressing details...';
+  else if (prefetchState === 'limited') searchHint = 'Discogs rate limit reached. Try again shortly.';
+  else if (query.trim() && filtered.length > detailLimit) {
+    searchHint = `Narrow to ${detailLimit} results or fewer to also search runouts and notes`;
+  }
+
+  const select = (candidate: DiscogsSearchResult) => {
+    Keyboard.dismiss();
+    onSelect(candidate, detailsRef.current.get(candidate.id) ?? undefined);
+  };
 
   // Each dropdown shows values from candidates filtered by the OTHER active filters
   const titles = uniqueValues(applyFilters.exceptTitle, (c) => parseArtistTitle(c.title).title || undefined);
@@ -140,13 +213,36 @@ export default function ReleasePicker({
     <Portal>
       <Dialog visible={visible} onDismiss={loading ? undefined : onDismiss} style={styles.dialog} dismissable={!loading}>
         <Dialog.Title>Choose pressing</Dialog.Title>
+        <View style={styles.searchSection}>
+          <TextInput
+            mode="outlined"
+            label="What's on your disc?"
+            placeholder="Matrix, catalog number or label"
+            value={query}
+            onChangeText={setQuery}
+            dense
+            autoCapitalize="none"
+            autoCorrect={false}
+            right={query ? <TextInput.Icon icon="close" onPress={() => setQuery('')} accessibilityLabel="Clear search" /> : undefined}
+          />
+          {searchHint ? (
+            <Text variant="labelSmall" style={[styles.searchHint, { color: theme.colors.onSurfaceVariant }]}>
+              {searchHint}
+            </Text>
+          ) : null}
+        </View>
         <Dialog.ScrollArea style={styles.scrollArea}>
           {loading && (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" />
             </View>
           )}
-          <ScrollView pointerEvents={loading ? 'none' : 'auto'} style={loading ? { opacity: 0.4 } : undefined}>
+          <ScrollView
+            pointerEvents={loading ? 'none' : 'auto'}
+            style={loading ? { opacity: 0.4 } : undefined}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
             {/* Filters */}
             <View style={styles.filterSection}>
               <FilterDropdown
@@ -192,15 +288,15 @@ export default function ReleasePicker({
             {shared.length > 0 ? (
               <View style={[styles.sharedCard, { backgroundColor: theme.colors.surfaceVariant }]}>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  All {filtered.length} results: {shared.map((d) => d.value).join(' · ')}
+                  All {results.length} results: {shared.map((d) => d.value).join(' · ')}
                 </Text>
               </View>
-            ) : filtered.length > 0 ? (
+            ) : results.length > 0 ? (
               <Text variant="labelSmall" style={[styles.resultCount, { color: theme.colors.onSurfaceVariant }]}>
-                {filtered.length} result{filtered.length !== 1 ? 's' : ''}
+                {results.length} result{results.length !== 1 ? 's' : ''}
               </Text>
             ) : null}
-            {filtered.map((candidate, index) => {
+            {results.map((candidate, index) => {
               const { artist, title } = parseArtistTitle(candidate.title);
               const cover = searchImage(candidate) || coverMap.get(candidate.id);
               const differing = differingDetails(candidate, shared);
@@ -208,7 +304,7 @@ export default function ReleasePicker({
                 <React.Fragment key={candidate.id}>
                   {index > 0 && <Divider />}
                   <Pressable
-                    onPress={() => onSelect(candidate)}
+                    onPress={() => select(candidate)}
                     style={({ pressed }) => [
                       styles.item,
                       pressed && { backgroundColor: theme.colors.surfaceVariant },
@@ -246,7 +342,7 @@ export default function ReleasePicker({
               );
             })}
 
-            {filtered.length === 0 && (
+            {results.length === 0 && (
               <Text
                 variant="bodyMedium"
                 style={[styles.emptyText, { color: theme.colors.onSurfaceVariant }]}
@@ -351,6 +447,13 @@ function FilterDropdown({
 const styles = StyleSheet.create({
   dialog: {
     maxHeight: '80%',
+  },
+  searchSection: {
+    paddingHorizontal: 24,
+    paddingBottom: 12,
+  },
+  searchHint: {
+    marginTop: 4,
   },
   scrollArea: {
     paddingHorizontal: 0,

@@ -32,6 +32,7 @@ export interface DiscogsSearchResult {
   type: string;            // "release", "master", etc.
   country?: string;
   label?: string[];
+  barcode?: string[];
   formats?: DiscogsFormat[];
   community?: { have?: number; want?: number };
 }
@@ -62,11 +63,13 @@ export interface DiscogsFormat {
   name: string;            // "CD", "Vinyl", "Cassette"
   qty: string;
   descriptions?: string[]; // ["Album", "Reissue", "Remastered"]
+  text?: string;           // Free text, e.g. "Gatefold"
 }
 
 export interface DiscogsIdentifier {
   type: string;            // "Barcode", "Matrix / Runout", etc.
   value: string;
+  description?: string;    // "Side A", "Text", etc.
 }
 
 export interface DiscogsArtistCredit {
@@ -87,6 +90,7 @@ export interface DiscogsReleaseDetail {
   tracklist: DiscogsTrack[];
   artists: DiscogsArtistCredit[];
   images?: { type: string; uri: string; uri150: string }[];
+  notes?: string;
   artistDisplay: string;   // Resolved by resolveArtistName()
   barcode: string;         // Set by caller (scanned barcode)
 }

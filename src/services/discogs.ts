@@ -105,6 +105,7 @@ export async function fetchReleaseDetail(
     tracklist: data.tracklist ?? [],
     artists: data.artists ?? [],
     images: data.images,
+    notes: data.notes,
     artistDisplay,
     barcode: '', // set by caller
   };

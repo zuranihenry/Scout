@@ -255,17 +255,18 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerError, setPickerError] = useState<{ id: number; message: string; removable: boolean } | null>(null);
 
-  const handleSelectRelease = useCallback(async (selected: DiscogsSearchResult) => {
+  const handleSelectRelease = useCallback(async (selected: DiscogsSearchResult, cached?: DiscogsReleaseDetail) => {
     selectingRef.current = true;
     setPickerLoading(true);
     try {
       const token = settings.discogsToken || undefined;
-      const detail = await fetchReleaseDetail(selected.id, token);
-      if (!detail) {
+      const fetched = cached ?? await fetchReleaseDetail(selected.id, token);
+      if (!fetched) {
         setPickerError({ id: selected.id, message: 'Release details are unavailable on Discogs for this pressing. This is usually due to an issue with Discogs. Please select another pressing.', removable: true });
         return;
       }
-      detail.barcode = scannedBarcodeRef.current;
+      // The picker keeps its copy, so set the barcode on a new object
+      const detail = { ...fetched, barcode: scannedBarcodeRef.current };
       patchSearchResultImages(selected, detail);
       setResult(selected);
       setReleaseDetail(detail);

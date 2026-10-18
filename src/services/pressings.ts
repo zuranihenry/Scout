@@ -1,4 +1,4 @@
-import type { DiscogsSearchResult } from '../types';
+import type { DiscogsSearchResult, DiscogsReleaseDetail } from '../types';
 import { stripDiscogsDisambiguator } from './discogs';
 
 // -- Popularity -----------------------------------------------------
@@ -77,4 +77,36 @@ export function formatNames(c: DiscogsSearchResult): string[] {
 export function searchImage(c: DiscogsSearchResult): string {
   const image = c.thumb || c.cover_image;
   return image && !image.includes('spacer.gif') ? image : '';
+}
+
+// -- Disc search ----------------------------------------------------
+
+/** Lowercase without spaces or punctuation, so "AL-8405-A Rev. #1" contains "arev1". */
+function compact(s: string): string {
+  return s.toLowerCase().replace(/[^0-9a-z\u00c0-\u1fff\u2070-\uffff]/g, '');
+}
+
+/** Whether text read off the disc appears in the search result or its loaded details. */
+export function matchesDiscQuery(
+  candidate: DiscogsSearchResult,
+  detail: DiscogsReleaseDetail | undefined,
+  query: string,
+): boolean {
+  const q = compact(query);
+  if (!q) return true;
+  const fields: (string | undefined)[] = [
+    ...(candidate.barcode ?? []),
+    candidate.catno,
+    ...(candidate.label ?? []),
+    ...(candidate.format ?? []),
+    ...(candidate.formats ?? []).map((f) => f.text),
+    candidate.country,
+  ];
+  if (detail) {
+    for (const i of detail.identifiers) fields.push(i.value, i.description);
+    for (const l of detail.labels) fields.push(l.catno);
+    for (const f of detail.formats) fields.push(f.text, ...(f.descriptions ?? []));
+    fields.push(detail.notes);
+  }
+  return fields.some((f) => !!f && compact(f).includes(q));
 }
