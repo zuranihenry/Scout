@@ -43,6 +43,14 @@ export class RedForbiddenError extends Error {
 // -- Rate limiter (sliding window) ----------------------------------
 
 const requestTimestamps: number[] = [];
+// Set after a 429, holding every request until RED's window has passed
+let pausedUntil = 0;
+
+/** Retry-After is in whole seconds, so wait one more to cover the rounding. */
+function retryAfterMs(res: Response): number {
+  const seconds = parseInt(res.headers.get('Retry-After') ?? '', 10);
+  return seconds >= 0 ? (seconds + 1) * 1000 : RATE_WINDOW;
+}
 
 async function rateLimitedFetch(
   url: string,
@@ -58,11 +66,11 @@ async function rateLimitedFetch(
     while (requestTimestamps.length > 0 && requestTimestamps[0]! <= now - RATE_WINDOW) {
       requestTimestamps.shift();
     }
-    if (requestTimestamps.length < RATE_LIMIT) {
+    if (now >= pausedUntil && requestTimestamps.length < RATE_LIMIT) {
       requestTimestamps.push(now);
       break;
     }
-    const waitUntil = requestTimestamps[0]! + RATE_WINDOW;
+    const waitUntil = now < pausedUntil ? pausedUntil : requestTimestamps[0]! + RATE_WINDOW;
     await new Promise((resolve) => setTimeout(resolve, waitUntil - now));
   }
   const res = await fetch(url, init);
@@ -72,6 +80,9 @@ async function rateLimitedFetch(
   }
   if (res.status === 403) {
     throw new RedForbiddenError();
+  }
+  if (res.status === 429) {
+    pausedUntil = Math.max(pausedUntil, Date.now() + retryAfterMs(res));
   }
   return res;
 }
