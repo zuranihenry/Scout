@@ -102,6 +102,13 @@ function AlbumCard({
               </Chip>
             </View>
           )}
+          {!expanded && album.pressingConfirmed === false && (
+            <View style={styles.redBadgeRow}>
+              <Chip icon="help-circle-outline" compact style={styles.redBadgeChip} textStyle={styles.chipText}>
+                Unconfirmed pressing
+              </Chip>
+            </View>
+          )}
           {!expanded && redSearching && (
             <View style={styles.redBadgeRow}>
               <Chip icon={({ size }) => <ActivityIndicator size={size} />} compact style={styles.redBadgeChip} textStyle={styles.chipText}>

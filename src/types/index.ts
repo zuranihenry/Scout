@@ -15,6 +15,7 @@ export interface Album {
   country?: string;
   addedAt: number;
   redStatus?: RedStatus;
+  pressingConfirmed?: boolean;  // Only false is saved, missing means confirmed
 }
 
 // -- Discogs types --------------------------------------------------

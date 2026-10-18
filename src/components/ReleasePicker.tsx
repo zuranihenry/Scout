@@ -25,6 +25,7 @@ interface ReleasePickerProps {
   errorRemovable: boolean;
   onErrorDismiss: () => void;
   onSelect: (result: DiscogsSearchResult, detail?: DiscogsReleaseDetail) => void;
+  onUnsure?: (result: DiscogsSearchResult, detail?: DiscogsReleaseDetail) => void;
   onDismiss: () => void;
 }
 
@@ -81,6 +82,7 @@ export default function ReleasePicker({
   errorRemovable,
   onErrorDismiss,
   onSelect,
+  onUnsure,
   onDismiss,
 }: ReleasePickerProps) {
   const theme = useTheme();
@@ -206,9 +208,9 @@ export default function ReleasePicker({
     searchHint = `Narrow to ${detailLimit} results or fewer to also search runouts and notes`;
   }
 
-  const select = (candidate: DiscogsSearchResult) => {
+  const select = (candidate: DiscogsSearchResult, handler = onSelect) => {
     Keyboard.dismiss();
-    onSelect(candidate, detailsRef.current.get(candidate.id) ?? undefined);
+    handler(candidate, detailsRef.current.get(candidate.id) ?? undefined);
   };
 
   const toggleExpanded = (id: number) => {
@@ -399,6 +401,14 @@ export default function ReleasePicker({
         <Dialog.Actions>
           {hasActiveFilters ? (
             <Button onPress={() => setFilters(emptyFilters)}>Clear filters</Button>
+          ) : null}
+          {onUnsure ? (
+            <Button
+              onPress={() => results[0] && select(results[0], onUnsure)}
+              disabled={loading || results.length === 0}
+            >
+              Not sure
+            </Button>
           ) : null}
           <Button onPress={onDismiss} disabled={loading}>Cancel</Button>
         </Dialog.Actions>

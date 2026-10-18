@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { View, StyleSheet, Image, Linking, AppState } from 'react-native';
 import { Text, Button, Chip, Surface, Snackbar, ActivityIndicator, Icon, useTheme } from 'react-native-paper';
 import { FontAwesome6 } from '@expo/vector-icons';
@@ -8,9 +8,10 @@ import * as Crypto from 'expo-crypto';
 import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
-import { searchByBarcode, parseArtistTitle, fetchReleaseDetail, fetchReleaseImages, DiscogsError } from '../services/discogs';
+import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, DiscogsError } from '../services/discogs';
 import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/redacted';
 import { searchImage } from '../services/pressings';
+import { albumFromRelease } from '../services/album';
 import ReleasePicker from '../components/ReleasePicker';
 import type { Album, DiscogsSearchResult, DiscogsReleaseDetail, RedStatus } from '../types';
 
@@ -18,17 +19,6 @@ type ScanState = 'idle' | 'looking_up' | 'disambiguate' | 'result' | 'error';
 
 const SCAN_COOLDOWN = 3000;
 const DUPLICATE_MESSAGE = 'This edition is already in your collection';
-
-function patchSearchResultImages(
-  hit: DiscogsSearchResult,
-  detail: DiscogsReleaseDetail,
-): void {
-  if (!hit.thumb && !hit.cover_image && detail.images?.length) {
-    const primary = detail.images.find((img) => img.type === 'primary') ?? detail.images[0];
-    hit.thumb = primary?.uri150 ?? '';
-    hit.cover_image = primary?.uri ?? '';
-  }
-}
 
 function discogsErrorMessage(err: unknown, fallback: string): string {
   if (!(err instanceof DiscogsError)) return fallback;
@@ -56,6 +46,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [redFailed, setRedFailed] = useState(false);
   const redLookupRef = useRef<{ releaseId: number; promise: Promise<RedStatus> } | null>(null);
   const [releaseDetail, setReleaseDetail] = useState<DiscogsReleaseDetail | null>(null);
+  const [pressingConfirmed, setPressingConfirmed] = useState(true);
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
   const [coverMap, setCoverMap] = useState<Map<number, string>>(new Map());
 
@@ -157,9 +148,9 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
             return;
           }
           detail.barcode = data;
-          patchSearchResultImages(hit, detail);
           setResult(hit);
           setReleaseDetail(detail);
+          setPressingConfirmed(true);
           setScanState('result');
         } else {
           // Multiple results: show picker (no detail fetching needed)
@@ -207,27 +198,22 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     [lookupBarcode],
   );
 
+  // The release as it will be saved
+  const preview = useMemo(
+    () => (result ? albumFromRelease(result, releaseDetail) : null),
+    [result, releaseDetail],
+  );
+
   const handleAdd = useCallback(() => {
-    if (!result) return;
-    const { artist, title } = releaseDetail
-      ? { artist: releaseDetail.artistDisplay, title: releaseDetail.title }
-      : parseArtistTitle(result.title);
+    if (!preview) return;
     const album: Album = {
+      ...preview,
       id: Crypto.randomUUID(),
-      discogsId: releaseDetail?.id ?? result.id,
       barcode: scannedBarcodeRef.current,
-      title,
-      artist,
-      year: releaseDetail?.year ?? (result.year ? parseInt(result.year, 10) : null),
-      thumb: result.thumb,
-      coverImage: result.cover_image,
-      genre: result.genre || [],
-      format: result.format || [],
-      catalogNumber: releaseDetail?.labels[0]?.catno ?? result.catno ?? '',
-      country: releaseDetail?.country,
       addedAt: Date.now(),
       redStatus: redStatus ?? undefined,
     };
+    if (!pressingConfirmed) album.pressingConfirmed = false;
     addAlbum(album);
     // Still checking RED, so save the result to the album once it arrives
     const lookup = redLookupRef.current;
@@ -240,8 +226,8 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     setResult(null);
     setReleaseDetail(null);
     releaseScan();
-    setSnackbar(`Added "${title}" to collection`);
-  }, [result, releaseDetail, redStatus, addAlbum, updateAlbum, releaseScan]);
+    setSnackbar(`Added "${album.title}" to collection`);
+  }, [preview, releaseDetail, pressingConfirmed, redStatus, addAlbum, updateAlbum, releaseScan]);
 
   const handleDismiss = useCallback(() => {
     setResult(null);
@@ -255,7 +241,11 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerError, setPickerError] = useState<{ id: number; message: string; removable: boolean } | null>(null);
 
-  const handleSelectRelease = useCallback(async (selected: DiscogsSearchResult, cached?: DiscogsReleaseDetail) => {
+  const handleSelectRelease = useCallback(async (
+    selected: DiscogsSearchResult,
+    cached?: DiscogsReleaseDetail,
+    confirmed = true,
+  ) => {
     selectingRef.current = true;
     setPickerLoading(true);
     try {
@@ -267,9 +257,9 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       }
       // The picker keeps its copy, so set the barcode on a new object
       const detail = { ...fetched, barcode: scannedBarcodeRef.current };
-      patchSearchResultImages(selected, detail);
       setResult(selected);
       setReleaseDetail(detail);
+      setPressingConfirmed(confirmed);
       setCandidates([]);
       setScanState('result');
     } catch (err) {
@@ -279,6 +269,11 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       setPickerLoading(false);
     }
   }, [settings.discogsToken]);
+
+  // "Not sure" in the picker passes its top match, which is saved as unconfirmed
+  const handleUnsure = useCallback((selected: DiscogsSearchResult, cached?: DiscogsReleaseDetail) => {
+    handleSelectRelease(selected, cached, false);
+  }, [handleSelectRelease]);
 
   const handlePickerErrorDismiss = useCallback(() => {
     if (pickerError?.removable) {
@@ -342,24 +337,29 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
         )}
       </View>
 
-      {scanState === 'result' && result && (
+      {scanState === 'result' && preview && (
         <Surface style={styles.resultCard} elevation={2}>
           <View style={styles.resultRow}>
-            {result.thumb ? (
-              <Image source={{ uri: result.thumb }} style={styles.resultThumb} />
+            {preview.thumb ? (
+              <Image source={{ uri: preview.thumb }} style={styles.resultThumb} />
             ) : null}
             <View style={styles.resultInfo}>
               <Text variant="titleMedium" numberOfLines={2}>
-                {releaseDetail?.title ?? parseArtistTitle(result.title).title}
+                {preview.title}
               </Text>
               <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                {releaseDetail?.artistDisplay ?? parseArtistTitle(result.title).artist}
+                {preview.artist}
               </Text>
-              {(releaseDetail?.year ?? result.year) ? (
+              {preview.year ? (
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {releaseDetail?.year ?? result.year}
+                  {preview.year}
                 </Text>
               ) : null}
+              {!pressingConfirmed && (
+                <Chip icon="help-circle-outline" compact style={styles.unconfirmedChip} textStyle={styles.chipText}>
+                  Unconfirmed pressing
+                </Chip>
+              )}
             </View>
           </View>
           {settings.redApiKey ? (
@@ -421,6 +421,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
         error={pickerError?.message ?? null}
         errorRemovable={!!pickerError?.removable}
         onSelect={handleSelectRelease}
+        onUnsure={handleUnsure}
         onDismiss={handlePickerDismiss}
         onErrorDismiss={handlePickerErrorDismiss}
       />
@@ -530,6 +531,10 @@ const styles = StyleSheet.create({
   },
   chipText: {
     fontSize: 11,
+  },
+  unconfirmedChip: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
   },
   lastAdded: {
     margin: 16,
