@@ -8,7 +8,7 @@ import * as Haptics from 'expo-haptics';
 import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
-import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/redacted';
+import { getRedStatus, RedAuthError, RedForbiddenError, RedUnavailableError } from '../services/redacted';
 import { fetchReleaseDetail } from '../services/discogs';
 import AlbumCard from '../components/AlbumCard';
 import SelectionToolbar from '../components/SelectionToolbar';
@@ -154,6 +154,12 @@ export default function CollectionScreen() {
         if (err instanceof RedForbiddenError) {
           setRedSearchingIds(new Set());
           showRedError(err.title, err.message);
+          stopped = true;
+          break;
+        }
+        if (err instanceof RedUnavailableError) {
+          setRedSearchingIds(new Set());
+          setSnackbar(err.message);
           stopped = true;
           break;
         }

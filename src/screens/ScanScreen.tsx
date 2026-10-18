@@ -52,6 +52,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const cooldownRef = useRef({ barcode: '', until: 0 });
   const [redStatus, setRedStatus] = useState<RedStatus | null>(null);
   const [redLoading, setRedLoading] = useState(false);
+  const [redFailed, setRedFailed] = useState(false);
   const [releaseDetail, setReleaseDetail] = useState<DiscogsReleaseDetail | null>(null);
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
   const [coverMap, setCoverMap] = useState<Map<number, string>>(new Map());
@@ -68,15 +69,18 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   useEffect(() => {
     if (!releaseDetail || !settings.redApiKey) {
       setRedStatus(null);
+      setRedFailed(false);
       return;
     }
     let cancelled = false;
     setRedLoading(true);
+    setRedFailed(false);
     getRedStatus(releaseDetail, settings.redApiKey)
       .then((status) => { if (!cancelled) setRedStatus(status); })
       .catch((err) => {
         if (!cancelled) {
           setRedStatus(null);
+          setRedFailed(true);
           if (err instanceof RedAuthError || err instanceof RedForbiddenError) showRedError(err.title, err.message);
         }
       })
@@ -368,6 +372,8 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
                     </Chip>
                   )}
                 </>
+              ) : redFailed ? (
+                <Chip icon="alert-circle-outline" compact>Couldn't check RED</Chip>
               ) : null}
             </View>
           ) : null}
