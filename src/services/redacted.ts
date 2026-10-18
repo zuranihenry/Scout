@@ -362,6 +362,19 @@ function filterByReleaseType(
   return matched.length > 0 ? matched : musicGroups;
 }
 
+/** All music groups, except albums for a single or EP, which often share their name. */
+function filterByReleaseTypeLoosely(
+  groups: RedArtistTorrentGroup[],
+  discogsFormats: DiscogsFormat[],
+): RedArtistTorrentGroup[] {
+  const allDescs = discogsFormats.flatMap((f) => f.descriptions ?? []);
+  const releaseType = discogsDescriptionsToRedReleaseType(allDescs);
+  const musicGroups = groups.filter((g) => g.releaseType < 1000);
+  if (releaseType !== 5 && releaseType !== 9) return musicGroups;
+  // Album, Soundtrack, Anthology, Compilation and Live album
+  return musicGroups.filter((g) => ![1, 3, 6, 7, 11].includes(g.releaseType));
+}
+
 // -- Step 7: Title matching -----------------------------------------
 
 function matchByTitle(
@@ -874,8 +887,12 @@ export async function getRedStatus(
   // Step 6: Filter by release type
   const typeFiltered = filterByReleaseType(groups, release.formats);
 
-  // Step 7: Title match
-  const titleMatches = matchByTitle(typeFiltered, title);
+  // Step 7: Title match. Discogs and RED don't always agree on the release type
+  // (e.g. soundtracks are just "Album" on Discogs), so retry with a looser filter.
+  let titleMatches = matchByTitle(typeFiltered, title);
+  if (titleMatches.length === 0) {
+    titleMatches = matchByTitle(filterByReleaseTypeLoosely(groups, release.formats), title);
+  }
   if (titleMatches.length === 0) {
     const requests = await searchFallbackRequests();
     return makeResult('not_uploaded', 0, requests);
