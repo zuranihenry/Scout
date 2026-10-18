@@ -27,7 +27,7 @@ interface CollectionContextValue {
   createList: (name: string) => AlbumList;
   renameList: (id: string, name: string) => void;
   deleteList: (id: string) => void;
-  hasBarcode: (barcode: string) => boolean;
+  findBarcode: (barcode: string) => Album | undefined;
 }
 
 const CollectionContext = createContext<CollectionContextValue | null>(null);
@@ -142,8 +142,8 @@ export function CollectionProvider({ children }: { children: React.ReactNode }) 
     setLastListId((prev) => (prev === id ? DEFAULT_LIST_ID : prev));
   }, []);
 
-  const hasBarcode = useCallback(
-    (barcode: string) => albums.some((a) => a.barcode === barcode),
+  const findBarcode = useCallback(
+    (barcode: string) => albums.find((a) => a.barcode === barcode),
     [albums],
   );
 
@@ -163,7 +163,7 @@ export function CollectionProvider({ children }: { children: React.ReactNode }) 
         createList,
         renameList,
         deleteList,
-        hasBarcode,
+        findBarcode,
       }}
     >
       {children}

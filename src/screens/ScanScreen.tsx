@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { View, StyleSheet, Image, Linking, AppState } from 'react-native';
-import { Text, Button, Chip, Surface, Snackbar, ActivityIndicator, Icon, useTheme } from 'react-native-paper';
+import { Text, Button, IconButton, Chip, Surface, Snackbar, ActivityIndicator, Icon, useTheme } from 'react-native-paper';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
@@ -12,17 +12,19 @@ import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, discogsErrorMe
 import { getRedStatus, RedAuthError, RedForbiddenError } from '../services/redacted';
 import { searchImage } from '../services/pressings';
 import { albumFromRelease } from '../services/album';
+import { albumListId, findList } from '../services/lists';
 import ReleasePicker from '../components/ReleasePicker';
-import type { Album, DiscogsSearchResult, DiscogsReleaseDetail, RedStatus } from '../types';
+import ListPickerDialog from '../components/ListPickerDialog';
+import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail, RedStatus } from '../types';
 
 type ScanState = 'idle' | 'looking_up' | 'disambiguate' | 'result' | 'error';
 
 const SCAN_COOLDOWN = 3000;
-const DUPLICATE_MESSAGE = 'This edition is already in your collection';
+const DUPLICATE_PREFIX = 'This edition is already in';
 
 export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const theme = useTheme();
-  const { addAlbum, updateAlbum, hasBarcode } = useCollection();
+  const { addAlbum, updateAlbum, findBarcode, lists, lastListId } = useCollection();
   const { settings, setFrogMode } = useSettings();
   const { showRedError } = useRedError();
   const [permission, requestPermission, getPermission] = useCameraPermissions();
@@ -42,6 +44,8 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const [pressingConfirmed, setPressingConfirmed] = useState(true);
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
   const [coverMap, setCoverMap] = useState<Map<number, string>>(new Map());
+  const [listPickerVisible, setListPickerVisible] = useState(false);
+  const lastList = findList(lists, lastListId);
 
   // Pick up a permission granted in the system settings
   useEffect(() => {
@@ -95,7 +99,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       if (scanLockRef.current) return;
       scanLockRef.current = true;
       scannedBarcodeRef.current = data;
-      setSnackbar((prev) => (prev === DUPLICATE_MESSAGE ? '' : prev));
+      setSnackbar((prev) => (prev.startsWith(DUPLICATE_PREFIX) ? '' : prev));
       setDuplicateBarcode(null);
 
       if (data === '682110000004') {
@@ -109,9 +113,10 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       setScanState('looking_up');
 
       try {
-        if (!skipDuplicateCheck && hasBarcode(data)) {
+        const existing = findBarcode(data);
+        if (!skipDuplicateCheck && existing) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-          setSnackbar(DUPLICATE_MESSAGE);
+          setSnackbar(`${DUPLICATE_PREFIX} ${findList(lists, albumListId(existing)).name}`);
           setDuplicateBarcode(data);
           releaseScan();
           return;
@@ -176,7 +181,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
         setTimeout(releaseScan, 2000);
       }
     },
-    [hasBarcode, settings.discogsToken, releaseScan],
+    [findBarcode, lists, settings.discogsToken, releaseScan],
   );
 
   const handleBarcodeScanned = useCallback(
@@ -197,7 +202,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     [result, releaseDetail],
   );
 
-  const handleAdd = useCallback(() => {
+  const handleAdd = useCallback((list: AlbumList) => {
     if (!preview) return;
     const album: Album = {
       ...preview,
@@ -207,7 +212,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       redStatus: redStatus ?? undefined,
     };
     if (!pressingConfirmed) album.pressingConfirmed = false;
-    addAlbum(album);
+    addAlbum(album, list.id);
     // Still checking RED, so save the result to the album once it arrives
     const lookup = redLookupRef.current;
     if (!redStatus && lookup && lookup.releaseId === releaseDetail?.id) {
@@ -219,8 +224,13 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
     setResult(null);
     setReleaseDetail(null);
     releaseScan();
-    setSnackbar(`Added "${album.title}" to collection`);
+    setSnackbar(`Added "${album.title}" to ${list.name}`);
   }, [preview, releaseDetail, pressingConfirmed, redStatus, addAlbum, updateAlbum, releaseScan]);
+
+  const handlePickList = useCallback((list: AlbumList) => {
+    setListPickerVisible(false);
+    handleAdd(list);
+  }, [handleAdd]);
 
   const handleDismiss = useCallback(() => {
     setResult(null);
@@ -399,12 +409,31 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
             <Button mode="outlined" onPress={handleDismiss}>
               Dismiss
             </Button>
-            <Button mode="contained" onPress={handleAdd}>
-              Add to Collection
+            <Button
+              mode="contained"
+              onPress={() => handleAdd(lastList)}
+              style={styles.addButton}
+              labelStyle={styles.addLabel}
+            >
+              {`Add to ${lastList.name}`}
             </Button>
+            <IconButton
+              icon="menu-down"
+              mode="contained"
+              onPress={() => setListPickerVisible(true)}
+              style={styles.listButton}
+              accessibilityLabel="Add to another list"
+            />
           </View>
         </Surface>
       )}
+
+      <ListPickerDialog
+        visible={listPickerVisible}
+        title="Add to list"
+        onSelect={handlePickList}
+        onDismiss={() => setListPickerVisible(false)}
+      />
 
       <ReleasePicker
         visible={scanState === 'disambiguate'}
@@ -422,7 +451,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       {scanState === 'idle' && !result && lastAdded && (
         <Surface style={styles.lastAdded} elevation={1}>
           <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-            Last added
+            Last added to {lastList.name}
           </Text>
           <View style={styles.resultRow}>
             {lastAdded.thumb ? (
@@ -513,8 +542,18 @@ const styles = StyleSheet.create({
   resultActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    alignItems: 'center',
     gap: 12,
     marginTop: 12,
+  },
+  addButton: {
+    flexShrink: 1,
+  },
+  addLabel: {
+    flexShrink: 1,
+  },
+  listButton: {
+    margin: 0,
   },
   redStatusRow: {
     flexDirection: 'row',
