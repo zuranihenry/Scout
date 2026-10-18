@@ -415,6 +415,20 @@ function filterByMedia(
   return candidates.filter((c) => c.media === redMedia);
 }
 
+function filterByTrackCount(
+  candidates: TorrentCandidate[],
+  release: DiscogsReleaseDetail,
+): TorrentCandidate[] {
+  // With several formats (e.g. CD + DVD) the tracklist isn't all on one torrent
+  if (release.formats.length !== 1) return candidates;
+  const trackCount = filterAudioTracks(release.tracklist).length;
+  // Bonus tracks make a different edition, so skip editions with clearly fewer files
+  return candidates.filter((c) => {
+    const fileCount = parseRedFileList(c.fileList).length;
+    return fileCount === 0 || fileCount > trackCount - 2;
+  });
+}
+
 function filterByCatalogueNumber(
   candidates: TorrentCandidate[],
   release: DiscogsReleaseDetail,
@@ -513,7 +527,8 @@ function narrowCandidates(
   release: DiscogsReleaseDetail,
 ): NarrowResult {
   const steps: ((cs: TorrentCandidate[]) => TorrentCandidate[])[] = [
-    (cs) => filterByMedia(cs, release),
+    // Track count goes with media, since an edition left on its own after any step is accepted
+    (cs) => filterByTrackCount(filterByMedia(cs, release), release),
     (cs) => filterByCatalogueNumber(cs, release),
     (cs) => filterByLabel(cs, release),
     (cs) => filterByEditionTitle(cs, release),
