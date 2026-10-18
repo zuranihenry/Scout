@@ -15,6 +15,8 @@ import { parseDuration, filterAudioTracks, stripDiscogsDisambiguator } from './d
 const BASE_URL = 'https://redacted.sh/ajax.php';
 const RATE_LIMIT = 10;
 const RATE_WINDOW = 10_000;
+// Most torrent groups fetched per lookup, so a common title can't use up the rate limit
+const MAX_GROUP_FETCHES = 5;
 
 // -- Auth error guard -----------------------------------------------
 // After a 401, block all requests until the API key changes.
@@ -246,6 +248,11 @@ export function normalizeTitle(s: string): string {
     .trim();
 }
 
+/** Normalized title, or the plain lowercase title for titles that normalize to nothing (e.g. Japanese). */
+function titleKey(s: string): string {
+  return normalizeTitle(s) || decodeHtmlEntities(s).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 /** Normalize a track name similarly to title, plus strip leading track numbering. */
 export function normalizeTrackName(name: string): string {
   return normalizeTitle(name).replace(/^\d+\s*/, '');
@@ -259,7 +266,8 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#039;/g, "'")
-    .replace(/&apos;/g, "'");
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d{2,5});/g, (_, code) => String.fromCodePoint(Number(code)));
 }
 
 /** Map a single Discogs format name to a RED media type string. */
@@ -362,14 +370,19 @@ function matchByTitle(
 ): RedArtistTorrentGroup[] {
   const target = normalizeTitle(discogsTitle);
 
-  // Pass 1: exact normalized match
-  const exact = groups.filter((g) => normalizeTitle(g.groupName) === target);
+  // Pass 1: exact normalized match, also on each part of a Discogs title
+  // given in two forms (e.g. "初恋 = Hatsukoi"), since RED may use either one
+  const keys = [discogsTitle, ...discogsTitle.split(' = ')].map(titleKey);
+  const exact = groups.filter((g) => keys.includes(titleKey(g.groupName)));
   if (exact.length > 0) return exact;
 
-  // Pass 2: one contains the other (for subtitles, suffixes, etc.)
+  // Pass 2: one contains the other (for subtitles, suffixes, etc.).
+  // Short names have to be whole words, as they turn up inside unrelated titles.
+  if (!target) return [];
+  const includes = (a: string, b: string) => (b.length >= 3 ? a.includes(b) : ` ${a} `.includes(` ${b} `));
   const contains = groups.filter((g) => {
     const norm = normalizeTitle(g.groupName);
-    return norm.includes(target) || target.includes(norm);
+    return norm !== '' && (includes(norm, target) || includes(target, norm));
   });
   return contains;
 }
@@ -575,12 +588,14 @@ function trackListingsMatch(
 
   for (const dTrack of discogsTracks) {
     const normDiscogs = normalizeTrackName(dTrack.name);
+    if (!normDiscogs) continue;
     let bestIdx = -1;
     let bestScore = 0;
 
     for (let i = 0; i < normRedNames.length; i++) {
       if (usedRedIndices.has(i)) continue;
       const normRed = normRedNames[i]!;
+      if (!normRed) continue;
 
       // Exact match
       if (normRed === normDiscogs) {
@@ -871,7 +886,7 @@ export async function getRedStatus(
   const groupDetailCache = new Map<number, RedGroupDetail>();
   const allCandidates: TorrentCandidate[] = [];
 
-  for (const group of titleMatches) {
+  for (const group of titleMatches.slice(0, MAX_GROUP_FETCHES)) {
     const detail = await fetchTorrentGroup(group.groupId, apiKey);
     if (!detail) continue;
     groupDetailCache.set(group.groupId, detail);
