@@ -371,7 +371,7 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
                     style={redStatus.uploaded ? undefined : { backgroundColor: theme.colors.secondary }}
                     textStyle={styles.chipText}
                   >
-                    {redStatus.uploaded ? 'Already on RED' : 'Not uploaded yet!'}
+                    {redStatus.uploaded ? 'Already on RED' : 'Not found on RED'}
                   </Chip>
                   {redStatus.losslessMissing && (
                     <Chip icon="music-note-plus" compact style={{ backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }} textStyle={styles.chipText}>

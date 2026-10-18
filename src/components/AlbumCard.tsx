@@ -120,7 +120,7 @@ function AlbumCard({
                 ]}
                 textStyle={styles.chipText}
               >
-                {album.redStatus.uploaded ? 'Already on RED' : 'Uploadable'}
+                {album.redStatus.uploaded ? 'Already on RED' : 'Not on RED'}
               </Chip>
               {album.redStatus.losslessMissing && (
                 <Chip icon="music-note-plus" compact style={[styles.redBadgeChip, { backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }]} textStyle={styles.chipText}>
@@ -213,7 +213,7 @@ function AlbumCard({
                         textDecorationLine: album.redStatus.matchedGroupId ? 'underline' : 'none',
                       }}
                     >
-                      {album.redStatus.uploaded ? 'Already on RED' : 'Uploadable'}
+                      {album.redStatus.uploaded ? 'Already on RED' : 'Not found on RED'}
                     </Text>
                   </Pressable>
                   {album.redStatus.losslessMissing && (
