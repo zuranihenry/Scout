@@ -11,6 +11,7 @@ A quick and easy way to manage potential uploads. Scan barcodes to look up physi
 - **Barcode scanning** - Use your camera to scan EAN/UPC barcodes on vinyl records and CDs
 - **Discogs lookup** - Automatically fetches release info (artist, title, cover art) from the Discogs database
 - **RED integration** - Check whether a scanned release is uploaded, has open requests, or has other editions on Redacted
+- **OPS integration** - The same checks on Orpheus, next to RED when both are set up
 - **Collection management** - Browse, reorder (drag-and-drop), multi-select, and delete releases
 - **Custom lists** - Sort releases into your own lists, choose a list when adding a scan, and move releases between lists
 - **Theming** - Light, dark, and system-default appearance modes
@@ -25,6 +26,7 @@ In the app's Settings tab:
 
 - **Discogs API** - Add a [personal access token](https://www.discogs.com/settings/developers) to increase the API rate limit
 - **RED API** - Add an API key (generated in your RED user settings, must have Torrents and Requests permissions) to enable upload/request checking
+- **OPS API** - Add an API token (created in your OPS user settings) to check releases on Orpheus. Scout keeps to OPS's limit of 5 API requests per 10 seconds, and stops calling OPS after a failed login until the token is changed
 
 ## Install on Android
 

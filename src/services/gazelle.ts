@@ -1,9 +1,12 @@
 import type {
+  Album,
+  Settings,
   DiscogsReleaseDetail,
   DiscogsFormat,
   TrackerStatus,
   TrackerRequest,
   GazelleArtistTorrentGroup,
+  GazelleArtistRequest,
   GazelleGroupDetail,
   GazelleGroupTorrent,
   TrackerMatchResult,
@@ -12,7 +15,7 @@ import { parseDuration, filterAudioTracks, stripDiscogsDisambiguator } from './d
 
 // -- Trackers -------------------------------------------------------
 
-export type TrackerId = 'red';
+export type TrackerId = 'red' | 'ops';
 
 interface Tracker {
   id: TrackerId;
@@ -20,12 +23,24 @@ interface Tracker {
   siteUrl: string;
   rateLimit: number;
   rateWindow: number;
+  rateLimitPause: number;  // How long to stop after the tracker says we're rate limited
+  // The server's own window: one counter for all actions, whose length and limit
+  // come from the action that opens it, as [requests, seconds]
+  actionLimits?: Record<string, [number, number]>;
   authorization: (apiKey: string) => string;
+  // Failed logins come back as HTTP 200 with an error message
+  jsonAuthErrors: boolean;
   forbiddenMessage: string;
   media: Record<string, string>;               // Discogs format name to media
   releaseTypes: Record<string, number>;        // Discogs format description to release type
   browseReleaseTypes: Record<string, number>;  // Browse release type name to release type
   browseTitleParam: string;
+  // The artist response lists the artist's open requests, which saves a requests search
+  artistRequests: boolean;
+  // An edition without a year is the original release, rather than an unknown one
+  editionYearFallback: boolean;
+  // trumpable only says the torrent is reported or missing lineage
+  trumpableMeansReported: boolean;
 }
 
 export const TRACKERS: Record<TrackerId, Tracker> = {
@@ -35,7 +50,9 @@ export const TRACKERS: Record<TrackerId, Tracker> = {
     siteUrl: 'https://redacted.sh',
     rateLimit: 10,
     rateWindow: 10_000,
+    rateLimitPause: 10_000,
     authorization: (apiKey) => apiKey,
+    jsonAuthErrors: false,
     forbiddenMessage: 'The RED API key is not authorised for this action. Please make sure it is enabled for Torrents and Requests.',
     media: {
       'CD': 'CD', 'CDr': 'CD',
@@ -57,8 +74,72 @@ export const TRACKERS: Record<TrackerId, Tracker> = {
       'Concert Recording': 18, 'DJ Mix': 19, 'Unknown': 21,
     },
     browseTitleParam: 'groupname',
+    artistRequests: false,
+    editionYearFallback: true,
+    trumpableMeansReported: false,
+  },
+  ops: {
+    id: 'ops',
+    name: 'OPS',
+    siteUrl: 'https://orpheus.network',
+    rateLimit: 5,
+    rateWindow: 10_000,
+    rateLimitPause: 60_000,
+    actionLimits: { artist: [15, 30], browse: [5, 10], requests: [5, 60], torrentgroup: [15, 60] },
+    authorization: (apiKey) => `token ${apiKey}`,
+    jsonAuthErrors: true,
+    forbiddenMessage: 'OPS refused the request. Log in to OPS in a browser to check your account.',
+    media: {
+      'CD': 'CD', 'CDr': 'CD',
+      'Vinyl': 'Vinyl',
+      'Cassette': 'Cassette',
+      'Blu-ray': 'BD',
+      'DVD': 'DVD',
+      'SACD': 'SACD',
+    },
+    releaseTypes: {
+      'Album': 1, 'Soundtrack': 3, 'EP': 5, 'Anthology': 6,
+      'Compilation': 7, 'Single': 9, 'Live': 11, 'Remix': 13,
+      'Mixtape': 16, 'Demo': 10, 'DJ Mix': 17,
+    },
+    browseReleaseTypes: {
+      'Album': 1, 'Soundtrack': 3, 'EP': 5, 'Anthology': 6,
+      'Compilation': 7, 'Sampler': 8, 'Single': 9, 'Demo': 10,
+      'Live album': 11, 'Split': 12, 'Remix': 13, 'Bootleg': 14,
+      'Interview': 15, 'Mixtape': 16, 'DJ Mix': 17, 'Concert recording': 18,
+      'Unknown': 21,
+    },
+    browseTitleParam: 'searchstr',
+    artistRequests: true,
+    editionYearFallback: false,
+    trumpableMeansReported: true,
   },
 };
+
+export const TRACKER_IDS: TrackerId[] = ['red', 'ops'];
+
+export const STATUS_FIELD: Record<TrackerId, 'redStatus' | 'opsStatus'> = {
+  red: 'redStatus',
+  ops: 'opsStatus',
+};
+
+export function apiKeyFor(settings: Settings, tracker: TrackerId): string {
+  return tracker === 'red' ? settings.redApiKey : settings.opsApiKey;
+}
+
+/** The trackers that have an API key, in display order. */
+export function configuredTrackers(settings: Settings): TrackerId[] {
+  return TRACKER_IDS.filter((tracker) => apiKeyFor(settings, tracker));
+}
+
+/** "RED", "OPS" or "RED & OPS", for labels. */
+export function trackerNames(trackers: TrackerId[]): string {
+  return trackers.map((tracker) => TRACKERS[tracker].name).join(' & ');
+}
+
+export function trackerStatus(album: Album, tracker: TrackerId): TrackerStatus | undefined {
+  return album[STATUS_FIELD[tracker]];
+}
 
 // Most torrent groups fetched per lookup, so a common title can't use up the rate limit
 const MAX_GROUP_FETCHES = 5;
@@ -68,8 +149,11 @@ const MAX_GROUP_FETCHES = 5;
 // After a 401, block all requests to that tracker until the API key changes.
 // A 403 is surfaced as a warning but does not block future requests.
 export class TrackerAuthError extends Error {
-  constructor(tracker: TrackerId) {
-    super(`The ${TRACKERS[tracker].name} API key is invalid. Requests are paused to prevent an IP ban. Change your API key in Settings.`);
+  constructor(
+    tracker: TrackerId,
+    message = `The ${TRACKERS[tracker].name} API key is invalid. Requests are paused to prevent an IP ban. Change your API key in Settings.`,
+  ) {
+    super(message);
     this.name = 'TrackerAuthError';
     this.title = 'Careful now...';
     this.tracker = tracker;
@@ -114,10 +198,12 @@ interface LimiterState {
   // Set when the tracker rate limits us, holding every request until its window has passed
   pausedUntil: number;
   blockedApiKey: string | null;
+  actionWindow: { end: number; count: number };
 }
 
 const limiters: Record<TrackerId, LimiterState> = {
-  red: { requestTimestamps: [], pausedUntil: 0, blockedApiKey: null },
+  red: { requestTimestamps: [], pausedUntil: 0, blockedApiKey: null, actionWindow: { end: 0, count: 0 } },
+  ops: { requestTimestamps: [], pausedUntil: 0, blockedApiKey: null, actionWindow: { end: 0, count: 0 } },
 };
 
 /** Retry-After is in whole seconds, so wait one more to cover the rounding. */
@@ -132,6 +218,8 @@ async function rateLimitedFetch(
   apiKey: string,
 ): Promise<Response> {
   const state = limiters[t.id];
+  const actionLimit = t.actionLimits?.[params.action!];
+  let opensWindow = false;
   // Check again after every wait, since other callers may have taken the free slot
   while (true) {
     if (state.blockedApiKey !== null && state.blockedApiKey === apiKey) {
@@ -141,17 +229,34 @@ async function rateLimitedFetch(
     while (state.requestTimestamps.length > 0 && state.requestTimestamps[0]! <= now - t.rateWindow) {
       state.requestTimestamps.shift();
     }
-    if (now >= state.pausedUntil && state.requestTimestamps.length < t.rateLimit) {
+    const window = state.actionWindow;
+    const windowOpen = now < window.end;
+    const windowFull = !!actionLimit && windowOpen && window.count >= actionLimit[0];
+    if (now >= state.pausedUntil && state.requestTimestamps.length < t.rateLimit && !windowFull) {
       state.requestTimestamps.push(now);
+      if (actionLimit) {
+        opensWindow = !windowOpen;
+        // A second of margin, since the server starts its window when the request arrives
+        state.actionWindow = opensWindow
+          ? { end: now + actionLimit[1] * 1000 + 1000, count: 1 }
+          : { end: window.end, count: window.count + 1 };
+      }
       break;
     }
-    const waitUntil = now < state.pausedUntil ? state.pausedUntil : state.requestTimestamps[0]! + t.rateWindow;
+    let waitUntil = now < state.pausedUntil ? state.pausedUntil : now;
+    if (state.requestTimestamps.length >= t.rateLimit) {
+      waitUntil = Math.max(waitUntil, state.requestTimestamps[0]! + t.rateWindow);
+    }
+    if (windowFull) waitUntil = Math.max(waitUntil, window.end);
     await new Promise((resolve) => setTimeout(resolve, waitUntil - now));
   }
   const url = `${t.siteUrl}/ajax.php?${new URLSearchParams(params)}`;
   const res = await fetch(url, { headers: { Authorization: t.authorization(apiKey) } }).catch(() => {
     throw new TrackerUnavailableError(t.id);
   });
+  if (opensWindow && actionLimit) {
+    state.actionWindow.end = Math.max(state.actionWindow.end, Date.now() + actionLimit[1] * 1000 + 1000);
+  }
   if (res.status === 401) {
     state.blockedApiKey = apiKey;
     throw new TrackerAuthError(t.id);
@@ -169,13 +274,29 @@ async function rateLimitedFetch(
 }
 
 /** Parse a tracker response. An error page or a rate limit failure means the tracker couldn't answer. */
-async function readJson<T extends { status: string; error?: string }>(t: Tracker, res: Response): Promise<T> {
+async function readJson<T extends { status: string; error?: string }>(t: Tracker, res: Response, apiKey: string): Promise<T> {
   const data: T = await res.json().catch(() => {
     throw new TrackerUnavailableError(t.id);
   });
-  if (data.status !== 'success' && /rate limit/i.test(data.error ?? '')) {
-    const state = limiters[t.id];
-    state.pausedUntil = Math.max(state.pausedUntil, Date.now() + t.rateWindow);
+  if (data.status === 'success') return data;
+  const error = data.error ?? '';
+  const state = limiters[t.id];
+  if (t.jsonAuthErrors) {
+    // Every failed login counts towards an IP ban, so stop after the first one
+    if (/invalid token|invalid authorization type/i.test(error)) {
+      state.blockedApiKey = apiKey;
+      throw new TrackerAuthError(t.id);
+    }
+    if (/ip address has been banned/i.test(error)) {
+      state.blockedApiKey = apiKey;
+      throw new TrackerAuthError(t.id, `${t.name} has banned your IP address, so requests are paused. Check your account on the site.`);
+    }
+    if (/insufficient privileges/i.test(error)) {
+      throw new TrackerForbiddenError(t.id);
+    }
+  }
+  if (/rate limit/i.test(error)) {
+    state.pausedUntil = Math.max(state.pausedUntil, Date.now() + t.rateLimitPause);
     throw new TrackerUnavailableError(t.id);
   }
   return data;
@@ -189,7 +310,7 @@ interface ArtistResponse {
     id: number;
     name: string;
     torrentgroup: GazelleArtistTorrentGroup[];
-    requests: { requestId: number; title: string; year: number; bounty: number }[];
+    requests?: GazelleArtistRequest[];
   };
 }
 
@@ -244,12 +365,12 @@ async function fetchArtist(
   t: Tracker,
   name: string,
   apiKey: string,
-): Promise<{ groups: GazelleArtistTorrentGroup[] }> {
+): Promise<{ groups: GazelleArtistTorrentGroup[]; requests: GazelleArtistRequest[] | null }> {
   const res = await rateLimitedFetch(t, { action: 'artist', artistname: name }, apiKey);
   if (!res.ok) throw new Error(`${t.name} artist lookup failed: ${res.status}`);
-  const data = await readJson<ArtistResponse>(t, res);
-  if (data.status !== 'success') return { groups: [] };
-  return { groups: data.response.torrentgroup ?? [] };
+  const data = await readJson<ArtistResponse>(t, res, apiKey);
+  if (data.status !== 'success') return { groups: [], requests: null };
+  return { groups: data.response.torrentgroup ?? [], requests: data.response.requests ?? [] };
 }
 
 async function fetchTorrentGroup(
@@ -259,7 +380,7 @@ async function fetchTorrentGroup(
 ): Promise<GazelleGroupDetail | null> {
   const res = await rateLimitedFetch(t, { action: 'torrentgroup', id: String(groupId) }, apiKey);
   if (!res.ok) return null;
-  const data = await readJson<TorrentGroupResponse>(t, res);
+  const data = await readJson<TorrentGroupResponse>(t, res, apiKey);
   if (data.status !== 'success') return null;
   return data.response;
 }
@@ -271,7 +392,7 @@ async function browseTorrents(
 ): Promise<BrowseResponse['response']['results']> {
   const res = await rateLimitedFetch(t, { action: 'browse', ...params }, apiKey);
   if (!res.ok) throw new Error(`${t.name} API error: ${res.status}`);
-  const data = await readJson<BrowseResponse>(t, res);
+  const data = await readJson<BrowseResponse>(t, res, apiKey);
   if (data.status !== 'success') return [];
   return data.response.results;
 }
@@ -283,7 +404,7 @@ async function searchRequests(
 ): Promise<RequestsResponse['response']['results']> {
   const res = await rateLimitedFetch(t, { action: 'requests', search: searchTerm }, apiKey);
   if (!res.ok) return [];
-  const data = await readJson<RequestsResponse>(t, res);
+  const data = await readJson<RequestsResponse>(t, res, apiKey);
   if (data.status !== 'success') return [];
   return data.response.results;
 }
@@ -344,7 +465,9 @@ export function discogsDescriptionsToReleaseType(t: Tracker, descriptions: strin
 
 /** Convert a browse releaseType string to integer. */
 function releaseTypeStringToInt(t: Tracker, s: string): number {
-  return t.browseReleaseTypes[s] ?? 21;
+  const name = s.toLowerCase();
+  const entry = Object.entries(t.browseReleaseTypes).find(([key]) => key.toLowerCase() === name);
+  return entry?.[1] ?? 21;
 }
 
 export function isVariousArtists(artist: string): boolean {
@@ -370,6 +493,7 @@ interface TorrentCandidate {
   fileList: string;
   description: string;
   trumpable?: boolean;
+  trumpableReasons?: string[];
 }
 
 // -- Step 6: Filter by release type ---------------------------------
@@ -542,13 +666,14 @@ function filterByEditionTitle(
 }
 
 function filterByYear(
+  t: Tracker,
   candidates: TorrentCandidate[],
   release: DiscogsReleaseDetail,
 ): TorrentCandidate[] {
   if (!release.year) return candidates;
 
   const matched = candidates.filter((c) => {
-    const year = c.remasterYear || c.groupYear;
+    const year = c.remasterYear || (t.editionYearFallback ? c.groupYear : 0);
     return year === release.year;
   });
   return matched.length > 0 ? matched : candidates;
@@ -574,7 +699,7 @@ function narrowCandidates(
     (cs) => filterByCatalogueNumber(cs, release),
     (cs) => filterByLabel(cs, release),
     (cs) => filterByEditionTitle(cs, release),
-    (cs) => filterByYear(cs, release),
+    (cs) => filterByYear(t, cs, release),
   ];
 
   let current = candidates;
@@ -717,7 +842,7 @@ function matchByTrackListing(
 
   for (const group of groupDetails) {
     // Try matching against group description track listing
-    const descTracks = parseDescriptionTracks(group.group.bbBody || group.group.wikiBody || '');
+    const descTracks = parseDescriptionTracks(group.group.bbBody || group.group.wikiBBcode || group.group.wikiBody || '');
 
     for (const torrent of group.torrents) {
       // Filter by media first
@@ -760,7 +885,7 @@ function torrentToCandidate(torrent: GazelleGroupTorrent, group: GazelleGroupDet
     media: torrent.media,
     format: torrent.format,
     encoding: torrent.encoding,
-    remasterYear: torrent.remasterYear,
+    remasterYear: torrent.remasterYear ?? 0,
     remasterTitle: torrent.remasterTitle,
     remasterRecordLabel: torrent.remasterRecordLabel,
     remasterCatalogueNumber: torrent.remasterCatalogueNumber,
@@ -768,6 +893,7 @@ function torrentToCandidate(torrent: GazelleGroupTorrent, group: GazelleGroupDet
     fileList: torrent.fileList,
     description: torrent.description,
     trumpable: torrent.trumpable,
+    trumpableReasons: torrent.trumpable_reasons,
   };
 }
 
@@ -824,6 +950,21 @@ function matchRequests(
     }));
 }
 
+/** Keep the artist's open music requests with this title. They don't list formats or media. */
+function matchArtistRequests(requests: GazelleArtistRequest[], title: string): TrackerRequest[] {
+  const key = titleKey(title);
+  return requests
+    .filter((r) => r.categoryId === undefined || r.categoryId === 1)
+    .filter((r) => titleKey(r.title) === key)
+    .map((r) => ({
+      requestId: r.requestId,
+      title: r.title,
+      year: r.year,
+      bounty: r.bounty,
+      formatList: '',
+    }));
+}
+
 /** Search requests and keep those for a specific group. */
 async function fetchRequestsForGroup(
   t: Tracker,
@@ -850,18 +991,25 @@ async function fetchRequestsForGroup(
 /**
  * Whether the matched edition still has no lossless torrent (24-bit counts too),
  * and whether the tracker marked all of its lossless torrents trumpable.
+ * On trackers where that only means reported, the reasons are returned instead.
  */
 function editionLossless(
+  t: Tracker,
   matched: TorrentCandidate,
   allCandidates: TorrentCandidate[],
-): { losslessMissing: boolean; trumpable: boolean } {
+): { losslessMissing: boolean; trumpable: boolean; reported?: string[] } {
   const key = editionKeyOf(matched);
   const lossless = allCandidates.filter(
     (c) => editionKeyOf(c) === key && c.encoding.includes('Lossless'),
   );
+  const flagged = lossless.length > 0 && lossless.every((c) => c.trumpable);
+  if (t.trumpableMeansReported) {
+    const reasons = [...new Set(lossless.flatMap((c) => c.trumpableReasons ?? []))];
+    return { losslessMissing: lossless.length === 0, trumpable: false, reported: flagged ? reasons : undefined };
+  }
   return {
     losslessMissing: lossless.length === 0,
-    trumpable: lossless.length > 0 && lossless.every((c) => c.trumpable),
+    trumpable: flagged,
   };
 }
 
@@ -873,11 +1021,13 @@ function makeResult(
   losslessMissing = false,
   matchedGroupId?: number,
   matchedTorrentId?: number,
+  reported?: string[],
 ): TrackerStatus {
   return {
     result,
     uploaded: result === 'uploaded',
     trumpable,
+    reported,
     losslessMissing,
     otherEditionCount,
     requestCount: requests.length,
@@ -901,6 +1051,13 @@ export async function getTrackerStatus(
   let groups: GazelleArtistTorrentGroup[];
   // Browsed groups that are credited to Various Artists
   const vaGroupIds = new Set<number>();
+  // The open requests from the artist responses, on trackers that list them
+  let artistRequests: GazelleArtistRequest[] | null = null;
+  const addArtistRequests = (requests: GazelleArtistRequest[] | null) => {
+    if (!t.artistRequests || !requests) return;
+    const known = new Set((artistRequests ?? []).map((r) => r.requestId));
+    artistRequests = [...(artistRequests ?? []), ...requests.filter((r) => !known.has(r.requestId))];
+  };
 
   if (isVariousArtists(artist)) {
     // Fallback: browse by title for Various Artists
@@ -939,6 +1096,7 @@ export async function getTrackerStatus(
       const name = artistCredit.anv || stripDiscogsDisambiguator(artistCredit.name);
       try {
         const data = await fetchArtist(t, name, apiKey);
+        addArtistRequests(data.requests);
         for (const group of data.groups) {
           const existing = groupMap.get(group.groupId);
           if (!existing || group.releaseType < existing.releaseType) {
@@ -951,6 +1109,9 @@ export async function getTrackerStatus(
       }
     }
 
+    if (groupMap.size === 0 && artistRequests) {
+      return makeResult('not_uploaded', 0, matchArtistRequests(artistRequests, title));
+    }
     if (groupMap.size === 0) {
       const requestResults = await searchRequests(t, `${artist} ${title}`, apiKey).catch((e) => {
         if (isTrackerError(e)) throw e;
@@ -971,6 +1132,7 @@ export async function getTrackerStatus(
     try {
       const artistData = await fetchArtist(t, artist, apiKey);
       groups = artistData.groups;
+      addArtistRequests(artistData.requests);
     } catch (err) {
       if (isTrackerError(err)) throw err;
       // Artist not found on the tracker - search requests as fallback
@@ -985,6 +1147,7 @@ export async function getTrackerStatus(
 
   // Helper: search requests (general text search, no group filter)
   const searchFallbackRequests = async () => {
+    if (artistRequests) return matchArtistRequests(artistRequests, title);
     const term = isVariousArtists(artist) ? title : `${artist} ${title}`;
     const results = await searchRequests(t, term, apiKey).catch((e) => {
       if (isTrackerError(e)) throw e;
@@ -1031,14 +1194,18 @@ export async function getTrackerStatus(
     return makeResult('not_uploaded', 0, requests);
   }
 
+  const requestsForGroup = (c: TorrentCandidate) => (artistRequests
+    ? Promise.resolve(matchArtistRequests(artistRequests, c.groupName))
+    : fetchRequestsForGroup(t, release, c.groupName, c.groupId, apiKey));
+
   // Step 8: Successive narrowing
   const narrowResult = narrowCandidates(t, allCandidates, release);
 
   if (narrowResult.result === 'single') {
     const otherEditions = countOtherEditions(narrowResult.candidate, allCandidates);
-    const { losslessMissing, trumpable } = editionLossless(narrowResult.candidate, allCandidates);
-    const requests = await fetchRequestsForGroup(t, release, narrowResult.candidate.groupName, narrowResult.candidate.groupId, apiKey);
-    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidate.groupId, narrowResult.candidate.torrentId);
+    const { losslessMissing, trumpable, reported } = editionLossless(t, narrowResult.candidate, allCandidates);
+    const requests = await requestsForGroup(narrowResult.candidate);
+    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidate.groupId, narrowResult.candidate.torrentId, reported);
   }
 
   // Steps 10–11: Track matching (for both 'zero' and 'multiple' outcomes)
@@ -1047,17 +1214,17 @@ export async function getTrackerStatus(
 
   if (trackMatches.length >= 1) {
     const otherEditions = countOtherEditions(trackMatches[0]!, allCandidates);
-    const { losslessMissing, trumpable } = editionLossless(trackMatches[0]!, allCandidates);
-    const requests = await fetchRequestsForGroup(t, release, trackMatches[0]!.groupName, trackMatches[0]!.groupId, apiKey);
-    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, trackMatches[0]!.groupId, trackMatches[0]!.torrentId);
+    const { losslessMissing, trumpable, reported } = editionLossless(t, trackMatches[0]!, allCandidates);
+    const requests = await requestsForGroup(trackMatches[0]!);
+    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, trackMatches[0]!.groupId, trackMatches[0]!.torrentId, reported);
   }
 
   // If title matched with multiple editions, treat as already on the tracker
   if (narrowResult.result === 'multiple') {
     const otherEditions = countOtherEditions(narrowResult.candidates[0]!, allCandidates);
-    const { losslessMissing, trumpable } = editionLossless(narrowResult.candidates[0]!, allCandidates);
-    const requests = await fetchRequestsForGroup(t, release, narrowResult.candidates[0]!.groupName, narrowResult.candidates[0]!.groupId, apiKey);
-    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidates[0]!.groupId, narrowResult.candidates[0]!.torrentId);
+    const { losslessMissing, trumpable, reported } = editionLossless(t, narrowResult.candidates[0]!, allCandidates);
+    const requests = await requestsForGroup(narrowResult.candidates[0]!);
+    return makeResult('uploaded', otherEditions, requests, trumpable, losslessMissing, narrowResult.candidates[0]!.groupId, narrowResult.candidates[0]!.torrentId, reported);
   }
 
   const requests = await searchFallbackRequests();

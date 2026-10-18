@@ -20,6 +20,8 @@ Note: these steps might be out of date, as I've not been very diligent about upd
 10. match the number of tracks, track names (ignoring capitalisation and punctuation) and track lengths (+/- constant offset uniformly across all tracks: max 3 s for CDs, 10s for Vinyls/Tapes) (discogs) against track listings in the release decription (RED).
 11. If 1 or more releases are matched, count this release as "already on RED". If 0 releases are matched, count this release as "uploadable".
 
+OPS uses the same steps, with its own release type numbers and media names. Its artist lookup already lists the artist's open requests, so requests are only searched for Various Artists releases and for artists that aren't found.
+
 ---
 
 remember: different track ordering and different mastering don't count as separate releases on RED

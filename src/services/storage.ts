@@ -8,10 +8,11 @@ const SETTINGS_KEY = 'scout_settings';
 const LISTS_KEY = 'scout_lists';
 
 // API keys are kept in secure storage, not in the settings JSON
-type SecretField = 'discogsToken' | 'redApiKey';
+type SecretField = 'discogsToken' | 'redApiKey' | 'opsApiKey';
 const SECRET_KEYS: Record<SecretField, string> = {
   discogsToken: 'scout_discogs_token',
   redApiKey: 'scout_red_api_key',
+  opsApiKey: 'scout_ops_api_key',
 };
 const SECRET_FIELDS = Object.keys(SECRET_KEYS) as SecretField[];
 
@@ -19,6 +20,7 @@ const DEFAULT_SETTINGS: Settings = {
   discogsToken: '',
   themeMode: 'system',
   redApiKey: '',
+  opsApiKey: '',
   frogModeActive: false,
   frogModeFound: false,
 };

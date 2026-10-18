@@ -3,7 +3,9 @@ import { View, StyleSheet, Image, Pressable, Linking } from 'react-native';
 import { Text, Chip, Icon, ActivityIndicator, Surface, useTheme } from 'react-native-paper';
 import { FontAwesome6 } from '@expo/vector-icons';
 import Sortable from 'react-native-sortables';
-import type { Album } from '../types';
+import { TRACKERS, TRACKER_IDS, trackerStatus, type TrackerId } from '../services/gazelle';
+import TrackerStatusChips, { formatBounty } from './TrackerStatusChips';
+import type { Album, TrackerStatus } from '../types';
 
 const frogGifs = [
   require('../../assets/frogs/frog1.gif'),
@@ -15,19 +17,14 @@ const frogGifs = [
   require('../../assets/frogs/frog7.gif'),
 ];
 
-function formatBounty(bytes: number): string {
-  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
-  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(0)} MB`;
-  return `${(bytes / 1024).toFixed(0)} KB`;
-}
-
 interface Props {
   album: Album;
   expanded: boolean;
   isSelected: boolean;
   selectionMode: boolean;
   frogModeActive: boolean;
-  redSearching?: boolean;
+  hasRedApiKey: boolean;
+  checkingTrackers?: TrackerId[];
   pressingLoading?: boolean;
   onPress: () => void;
   onLongPress: () => void;
@@ -41,7 +38,8 @@ function AlbumCard({
   isSelected,
   selectionMode,
   frogModeActive,
-  redSearching,
+  hasRedApiKey,
+  checkingTrackers,
   pressingLoading,
   onPress,
   onLongPress,
@@ -113,43 +111,16 @@ function AlbumCard({
               </Chip>
             </View>
           )}
-          {!expanded && redSearching && (
-            <View style={styles.redBadgeRow}>
-              <Chip icon={({ size }) => <ActivityIndicator size={size} />} compact style={styles.redBadgeChip} textStyle={styles.chipText}>
-                Checking RED...
-              </Chip>
-            </View>
-          )}
-          {!expanded && !redSearching && album.redStatus && (
-            <View style={styles.redBadgeRow}>
-              <Chip
-                icon={album.redStatus.uploaded ? 'check-circle' : 'progress-upload'}
-                compact
-                style={[
-                  styles.redBadgeChip,
-                  !album.redStatus.uploaded && { backgroundColor: theme.colors.secondary },
-                ]}
-                textStyle={styles.chipText}
-              >
-                {album.redStatus.uploaded ? 'Already on RED' : 'Not on RED'}
-              </Chip>
-              {album.redStatus.losslessMissing && (
-                <Chip icon="music-note-plus" compact style={[styles.redBadgeChip, { backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }]} textStyle={styles.chipText}>
-                  No FLAC yet
-                </Chip>
-              )}
-              {album.redStatus.trumpable && (
-                <Chip icon="chevron-double-up" compact style={[styles.redBadgeChip, { backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }]} textStyle={styles.chipText}>
-                  Trumpable
-                </Chip>
-              )}
-              {album.redStatus.requests[0] && (
-                <Chip icon={({ size, color }) => <FontAwesome6 name="sack-dollar" size={size - 4} color={color} />} compact style={styles.redBadgeChip} textStyle={styles.chipText}>
-                  {album.redStatus.requests[0].formatList} - {formatBounty(album.redStatus.requests[0].bounty)}
-                </Chip>
-              )}
-            </View>
-          )}
+          {!expanded && TRACKER_IDS.map((tracker) => (
+            <TrackerStatusChips
+              key={tracker}
+              tracker={tracker}
+              status={trackerStatus(album, tracker)}
+              checking={checkingTrackers?.includes(tracker)}
+              variant="badge"
+              style={styles.redBadgeRow}
+            />
+          ))}
           {expanded && (
             <View style={styles.expanded}>
               {!!album.year && (
@@ -203,90 +174,27 @@ function AlbumCard({
                 <View style={styles.editionRow}>
                   <Icon source="alert" size={14} color="#E65100" />
                   <Text variant="bodySmall" style={{ color: '#E65100' }}>
-                    Unofficial release (see rule{' '}
-                    <Text
-                      variant="bodySmall"
-                      style={{ color: theme.colors.primary, textDecorationLine: 'underline' }}
-                      onPress={() => Linking.openURL('https://redacted.sh/rules.php?p=upload#r2.1.16.3')}
-                    >
-                      2.1.16.3
-                    </Text>
-                    )
-                  </Text>
-                </View>
-              )}
-              {album.redStatus && (
-                <View style={styles.redSection}>
-                  <Text variant="labelMedium" style={{ color: theme.colors.primary, marginTop: 4 }}>
-                    This edition
-                  </Text>
-                  <Pressable
-                    style={styles.editionRow}
-                    onPress={album.redStatus.matchedGroupId ? () => Linking.openURL(
-                      album.redStatus!.matchedTorrentId
-                        ? `https://redacted.sh/torrents.php?id=${album.redStatus!.matchedGroupId}&torrentid=${album.redStatus!.matchedTorrentId}`
-                        : `https://redacted.sh/torrents.php?id=${album.redStatus!.matchedGroupId}`
-                    ) : undefined}
-                  >
-                    <Icon
-                      source={album.redStatus.uploaded ? 'check-circle' : 'progress-upload'}
-                      size={14}
-                      color={album.redStatus.uploaded && !album.redStatus.matchedGroupId ? theme.colors.onSurfaceVariant : theme.colors.primary}
-                    />
-                    <Text
-                      variant="bodySmall"
-                      style={{
-                        color: album.redStatus.uploaded && !album.redStatus.matchedGroupId ? theme.colors.onSurfaceVariant : theme.colors.primary,
-                        textDecorationLine: album.redStatus.matchedGroupId ? 'underline' : 'none',
-                      }}
-                    >
-                      {album.redStatus.uploaded ? 'Already on RED' : 'Not found on RED'}
-                    </Text>
-                  </Pressable>
-                  {album.redStatus.losslessMissing && (
-                    <View style={styles.editionRow}>
-                      <Icon source="music-note-plus" size={14} color="#9C7C00" />
-                      <Text variant="bodySmall" style={{ color: '#9C7C00' }}>
-                        No FLAC yet
-                      </Text>
-                    </View>
-                  )}
-                  {album.redStatus.trumpable && (
-                    <View style={styles.editionRow}>
-                      <Icon source="chevron-double-up" size={14} color="#9C7C00" />
-                      <Text variant="bodySmall" style={{ color: '#9C7C00' }}>
-                        Trumpable - can be replaced
-                      </Text>
-                    </View>
-                  )}
-                  {album.redStatus.requests[0] && (
-                    <>
-                      <Text variant="labelMedium" style={{ color: theme.colors.primary, marginTop: 6 }}>
-                        Request
-                      </Text>
-                      <Pressable
-                        style={styles.editionRow}
-                        onPress={() => Linking.openURL(`https://redacted.sh/requests.php?action=view&id=${album.redStatus!.requests[0]!.requestId}`)}
-                      >
-                        <FontAwesome6 name="sack-dollar" size={12} color={theme.colors.primary} />
-                        <Text variant="bodySmall" style={{ color: theme.colors.primary, flex: 1, textDecorationLine: 'underline' }}>
-                          {album.redStatus.requests[0].formatList} - {formatBounty(album.redStatus.requests[0].bounty)} bounty
+                    Unofficial release
+                    {hasRedApiKey && (
+                      <>
+                        {' '}(see rule{' '}
+                        <Text
+                          variant="bodySmall"
+                          style={{ color: theme.colors.primary, textDecorationLine: 'underline' }}
+                          onPress={() => Linking.openURL('https://redacted.sh/rules.php?p=upload#r2.1.16.3')}
+                        >
+                          2.1.16.3
                         </Text>
-                      </Pressable>
-                    </>
-                  )}
-                  {(album.redStatus.otherEditionCount ?? 0) > 0 && (
-                    <>
-                      <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 6 }}>
-                        Other editions
-                      </Text>
-                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                        {album.redStatus.otherEditionCount} other edition{album.redStatus.otherEditionCount !== 1 ? 's' : ''} on RED
-                      </Text>
-                    </>
-                  )}
+                        )
+                      </>
+                    )}
+                  </Text>
                 </View>
               )}
+              {TRACKER_IDS.map((tracker) => {
+                const status = trackerStatus(album, tracker);
+                return status ? <TrackerEdition key={tracker} tracker={tracker} status={status} /> : null;
+              })}
             </View>
           )}
         </View>
@@ -302,6 +210,93 @@ function AlbumCard({
   );
 }
 
+/** The "This edition" details for one tracker in the expanded card. */
+function TrackerEdition({ tracker, status }: { tracker: TrackerId; status: TrackerStatus }) {
+  const theme = useTheme();
+  const { name, siteUrl } = TRACKERS[tracker];
+  const request = status.requests[0];
+  return (
+    <View style={styles.redSection}>
+      <Text variant="labelMedium" style={{ color: theme.colors.primary, marginTop: 4 }}>
+        This edition on {name}
+      </Text>
+      <Pressable
+        style={styles.editionRow}
+        onPress={status.matchedGroupId ? () => Linking.openURL(
+          status.matchedTorrentId
+            ? `${siteUrl}/torrents.php?id=${status.matchedGroupId}&torrentid=${status.matchedTorrentId}`
+            : `${siteUrl}/torrents.php?id=${status.matchedGroupId}`
+        ) : undefined}
+      >
+        <Icon
+          source={status.uploaded ? 'check-circle' : 'progress-upload'}
+          size={14}
+          color={status.uploaded && !status.matchedGroupId ? theme.colors.onSurfaceVariant : theme.colors.primary}
+        />
+        <Text
+          variant="bodySmall"
+          style={{
+            color: status.uploaded && !status.matchedGroupId ? theme.colors.onSurfaceVariant : theme.colors.primary,
+            textDecorationLine: status.matchedGroupId ? 'underline' : 'none',
+          }}
+        >
+          {status.uploaded ? `Already on ${name}` : `Not found on ${name}`}
+        </Text>
+      </Pressable>
+      {status.losslessMissing && (
+        <View style={styles.editionRow}>
+          <Icon source="music-note-plus" size={14} color="#9C7C00" />
+          <Text variant="bodySmall" style={{ color: '#9C7C00' }}>
+            No FLAC yet
+          </Text>
+        </View>
+      )}
+      {status.trumpable && (
+        <View style={styles.editionRow}>
+          <Icon source="chevron-double-up" size={14} color="#9C7C00" />
+          <Text variant="bodySmall" style={{ color: '#9C7C00' }}>
+            Trumpable - can be replaced
+          </Text>
+        </View>
+      )}
+      {status.reported && (
+        <View style={styles.editionRow}>
+          <Icon source="flag-outline" size={14} color="#9C7C00" />
+          <Text variant="bodySmall" style={{ color: '#9C7C00', flex: 1 }}>
+            {status.reported.length > 0 ? `Reported: ${status.reported.join(', ')}` : 'Reported'}
+          </Text>
+        </View>
+      )}
+      {request && (
+        <>
+          <Text variant="labelMedium" style={{ color: theme.colors.primary, marginTop: 6 }}>
+            Request
+          </Text>
+          <Pressable
+            style={styles.editionRow}
+            onPress={() => Linking.openURL(`${siteUrl}/requests.php?action=view&id=${request.requestId}`)}
+          >
+            <FontAwesome6 name="sack-dollar" size={12} color={theme.colors.primary} />
+            <Text variant="bodySmall" style={{ color: theme.colors.primary, flex: 1, textDecorationLine: 'underline' }}>
+              {[request.formatList, `${formatBounty(request.bounty)} bounty`].filter(Boolean).join(' - ')}
+            </Text>
+          </Pressable>
+        </>
+      )}
+      {(status.otherEditionCount ?? 0) > 0 && (
+        <>
+          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 6 }}>
+            Other editions
+          </Text>
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+            {status.otherEditionCount} other edition{status.otherEditionCount !== 1 ? 's' : ''} on {name}
+          </Text>
+        </>
+      )}
+    </View>
+  );
+}
+
 export default React.memo(AlbumCard, (prev, next) => {
   return (
     prev.album === next.album &&
@@ -309,7 +304,8 @@ export default React.memo(AlbumCard, (prev, next) => {
     prev.isSelected === next.isSelected &&
     prev.selectionMode === next.selectionMode &&
     prev.frogModeActive === next.frogModeActive &&
-    prev.redSearching === next.redSearching &&
+    prev.hasRedApiKey === next.hasRedApiKey &&
+    prev.checkingTrackers === next.checkingTrackers &&
     prev.pressingLoading === next.pressingLoading
   );
 });

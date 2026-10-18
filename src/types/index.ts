@@ -15,6 +15,7 @@ export interface Album {
   country?: string;
   addedAt: number;
   redStatus?: TrackerStatus;
+  opsStatus?: TrackerStatus;
   pressingConfirmed?: boolean;  // Only false is saved, missing means confirmed
   listId?: string;              // Missing means the Collection list
 }
@@ -109,7 +110,7 @@ export interface DiscogsReleaseDetail {
   barcode: string;         // Set by caller (scanned barcode)
 }
 
-// -- Gazelle tracker types (RED) -------------------------------------
+// -- Gazelle tracker types (RED, OPS) --------------------------------
 
 // From action=artist - torrentgroup[].torrent[] (singular key!)
 export interface GazelleArtistTorrent {
@@ -138,6 +139,7 @@ export interface GazelleArtistTorrentGroup {
 
 export interface GazelleArtistRequest {
   requestId: number;
+  categoryId?: number;
   title: string;
   year: number;
   bounty: number;
@@ -149,8 +151,8 @@ export interface GazelleGroupTorrent {
   media: string;
   format: string;
   encoding: string;
-  remastered: boolean;
-  remasterYear: number;
+  remastered?: boolean;             // Not on OPS
+  remasterYear: number | null;      // Null or 0 on OPS for an unknown edition
   remasterTitle: string;
   remasterRecordLabel: string;
   remasterCatalogueNumber: string;  // ONLY available here
@@ -158,6 +160,7 @@ export interface GazelleGroupTorrent {
   fileList: string;
   description: string;
   trumpable?: boolean;              // Marked trumpable by the tracker
+  trumpable_reasons?: string[];     // OPS: open reports and missing lineage
 }
 
 export interface GazelleGroupDetail {
@@ -168,7 +171,8 @@ export interface GazelleGroupDetail {
     recordLabel: string;
     catalogueNumber: string;
     releaseType: number;
-    bbBody: string;
+    bbBody?: string;
+    wikiBBcode?: string;              // OPS has this instead of bbBody
     wikiBody: string;
   };
   torrents: GazelleGroupTorrent[];
@@ -188,6 +192,7 @@ export interface TrackerStatus {
   result: TrackerMatchResult;
   uploaded: boolean;          // Backwards compat: result === 'uploaded'
   trumpable: boolean;         // The tracker marked all of the edition's lossless torrents trumpable
+  reported?: string[];        // OPS: why all of them are reported, instead of trumpable
   losslessMissing?: boolean;  // The edition has no lossless torrent yet
   otherEditionCount: number;
   requestCount: number;
@@ -205,6 +210,7 @@ export interface Settings {
   discogsToken: string;
   themeMode: ThemeMode;
   redApiKey: string;
+  opsApiKey: string;
   frogModeActive: boolean;
   frogModeFound: boolean;
 }

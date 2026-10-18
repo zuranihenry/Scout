@@ -1,7 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { View, StyleSheet, Image, Linking, AppState } from 'react-native';
 import { Text, Button, IconButton, Chip, Surface, Snackbar, ActivityIndicator, Icon, useTheme } from 'react-native-paper';
-import { FontAwesome6 } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import * as Crypto from 'expo-crypto';
@@ -9,16 +8,27 @@ import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
 import { searchByBarcode, fetchReleaseDetail, fetchReleaseImages, discogsErrorMessage } from '../services/discogs';
-import { getTrackerStatus, TrackerAuthError, TrackerForbiddenError } from '../services/gazelle';
+import {
+  getTrackerStatus,
+  apiKeyFor,
+  configuredTrackers,
+  STATUS_FIELD,
+  TRACKER_IDS,
+  TrackerAuthError,
+  TrackerForbiddenError,
+  type TrackerId,
+} from '../services/gazelle';
 import { searchImage } from '../services/pressings';
 import { albumFromRelease } from '../services/album';
 import { albumListId, findList } from '../services/lists';
 import ReleasePicker from '../components/ReleasePicker';
 import ListPickerDialog from '../components/ListPickerDialog';
 import BarcodeDialog from '../components/BarcodeDialog';
+import TrackerStatusChips from '../components/TrackerStatusChips';
 import type { Album, AlbumList, DiscogsSearchResult, DiscogsReleaseDetail, TrackerStatus } from '../types';
 
 type ScanState = 'idle' | 'looking_up' | 'disambiguate' | 'result' | 'error';
+type TrackerCheck = { status: TrackerStatus | null; loading: boolean; failed: boolean };
 
 const SCAN_COOLDOWN = 3000;
 const DUPLICATE_PREFIX = 'This edition is already in';
@@ -37,10 +47,8 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   const scanLockRef = useRef(false);
   const scannedBarcodeRef = useRef('');
   const cooldownRef = useRef({ barcode: '', until: 0 });
-  const [redStatus, setRedStatus] = useState<TrackerStatus | null>(null);
-  const [redLoading, setRedLoading] = useState(false);
-  const [redFailed, setRedFailed] = useState(false);
-  const redLookupRef = useRef<{ releaseId: number; promise: Promise<TrackerStatus> } | null>(null);
+  const [trackerChecks, setTrackerChecks] = useState<Partial<Record<TrackerId, TrackerCheck>>>({});
+  const trackerLookupRef = useRef<{ releaseId: number; promises: Partial<Record<TrackerId, Promise<TrackerStatus>>> } | null>(null);
   const [releaseDetail, setReleaseDetail] = useState<DiscogsReleaseDetail | null>(null);
   const [pressingConfirmed, setPressingConfirmed] = useState(true);
   const [candidates, setCandidates] = useState<DiscogsSearchResult[]>([]);
@@ -64,34 +72,37 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
   }, [isActive]);
 
   // Read through a ref so saving a key doesn't start a lookup for the open result
-  const redApiKeyRef = useRef(settings.redApiKey);
-  redApiKeyRef.current = settings.redApiKey;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
-  // Fetch RED status when release detail is available
+  // Check each tracker with a key, in parallel, when release detail is available
   useEffect(() => {
-    const apiKey = redApiKeyRef.current;
-    if (!releaseDetail || !apiKey) {
-      redLookupRef.current = null;
-      setRedStatus(null);
-      setRedFailed(false);
-      setRedLoading(false);
+    const trackers = configuredTrackers(settingsRef.current);
+    if (!releaseDetail || trackers.length === 0) {
+      trackerLookupRef.current = null;
+      setTrackerChecks({});
       return;
     }
     let cancelled = false;
-    setRedLoading(true);
-    setRedFailed(false);
-    const lookup = getTrackerStatus('red', releaseDetail, apiKey);
-    redLookupRef.current = { releaseId: releaseDetail.id, promise: lookup };
-    lookup
-      .then((status) => { if (!cancelled) setRedStatus(status); })
-      .catch((err) => {
-        if (!cancelled) {
-          setRedStatus(null);
-          setRedFailed(true);
-          if (err instanceof TrackerAuthError || err instanceof TrackerForbiddenError) showRedError(err.title, err.message);
-        }
-      })
-      .finally(() => { if (!cancelled) setRedLoading(false); });
+    const setCheck = (tracker: TrackerId, check: TrackerCheck) => {
+      if (!cancelled) setTrackerChecks((prev) => ({ ...prev, [tracker]: check }));
+    };
+    const promises: Partial<Record<TrackerId, Promise<TrackerStatus>>> = {};
+    setTrackerChecks({});
+    for (const tracker of trackers) {
+      setCheck(tracker, { status: null, loading: true, failed: false });
+      const lookup = getTrackerStatus(tracker, releaseDetail, apiKeyFor(settingsRef.current, tracker));
+      promises[tracker] = lookup;
+      lookup
+        .then((status) => setCheck(tracker, { status, loading: false, failed: false }))
+        .catch((err) => {
+          setCheck(tracker, { status: null, loading: false, failed: true });
+          if (!cancelled && (err instanceof TrackerAuthError || err instanceof TrackerForbiddenError)) {
+            showRedError(err.title, err.message);
+          }
+        });
+    }
+    trackerLookupRef.current = { releaseId: releaseDetail.id, promises };
     return () => { cancelled = true; };
   }, [releaseDetail]);
 
@@ -222,23 +233,30 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
       id: Crypto.randomUUID(),
       barcode: scannedBarcodeRef.current,
       addedAt: Date.now(),
-      redStatus: redStatus ?? undefined,
     };
+    for (const tracker of TRACKER_IDS) {
+      const status = trackerChecks[tracker]?.status;
+      if (status) album[STATUS_FIELD[tracker]] = status;
+    }
     if (!pressingConfirmed) album.pressingConfirmed = false;
     addAlbum(album, list.id);
-    // Still checking RED, so save the result to the album once it arrives
-    const lookup = redLookupRef.current;
-    if (!redStatus && lookup && lookup.releaseId === releaseDetail?.id) {
-      lookup.promise
-        .then((status) => updateAlbum(album.id, { redStatus: status }))
-        .catch(() => {});
+    // Trackers still being checked save their result to the album once it arrives
+    const lookup = trackerLookupRef.current;
+    if (lookup && lookup.releaseId === releaseDetail?.id) {
+      for (const tracker of TRACKER_IDS) {
+        const promise = lookup.promises[tracker];
+        if (!promise || trackerChecks[tracker]?.status) continue;
+        promise
+          .then((status) => updateAlbum(album.id, { [STATUS_FIELD[tracker]]: status }))
+          .catch(() => {});
+      }
     }
     setLastAdded(album);
     setResult(null);
     setReleaseDetail(null);
     releaseScan();
     setSnackbar(`Added "${album.title}" to ${list.name}`);
-  }, [preview, releaseDetail, pressingConfirmed, redStatus, addAlbum, updateAlbum, releaseScan]);
+  }, [preview, releaseDetail, pressingConfirmed, trackerChecks, addAlbum, updateAlbum, releaseScan]);
 
   const handlePickList = useCallback((list: AlbumList) => {
     setListPickerVisible(false);
@@ -398,46 +416,20 @@ export default function ScanScreen({ isActive }: { isActive: boolean }) {
               )}
             </View>
           </View>
-          {settings.redApiKey ? (
-            <View style={styles.redStatusRow}>
-              {redLoading ? (
-                <Chip icon="loading" compact>Checking RED...</Chip>
-              ) : redStatus ? (
-                <>
-                  <Chip
-                    icon={redStatus.uploaded ? 'check-circle' : 'progress-upload'}
-                    compact
-                    style={redStatus.uploaded ? undefined : { backgroundColor: theme.colors.secondary }}
-                    textStyle={styles.chipText}
-                  >
-                    {redStatus.uploaded ? 'Already on RED' : 'Not found on RED'}
-                  </Chip>
-                  {redStatus.losslessMissing && (
-                    <Chip icon="music-note-plus" compact style={{ backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }} textStyle={styles.chipText}>
-                      No FLAC yet
-                    </Chip>
-                  )}
-                  {redStatus.trumpable && (
-                    <Chip icon="chevron-double-up" compact style={{ backgroundColor: theme.dark ? '#4A3800' : '#FFF9C4' }} textStyle={styles.chipText}>
-                      Trumpable
-                    </Chip>
-                  )}
-                  {redStatus.requests[0] && (
-                    <Chip icon={({ size, color }) => <FontAwesome6 name="sack-dollar" size={size - 4} color={color} />} compact>
-                      Request exists: {redStatus.requests[0].formatList}
-                    </Chip>
-                  )}
-                  {(redStatus.otherEditionCount ?? 0) > 0 && (
-                    <Chip icon="disc" compact>
-                      {redStatus.otherEditionCount} other edition{redStatus.otherEditionCount !== 1 ? 's' : ''}
-                    </Chip>
-                  )}
-                </>
-              ) : redFailed ? (
-                <Chip icon="alert-circle-outline" compact>Couldn't check RED</Chip>
-              ) : null}
-            </View>
-          ) : null}
+          {TRACKER_IDS.map((tracker) => {
+            const check = trackerChecks[tracker];
+            return check ? (
+              <TrackerStatusChips
+                key={tracker}
+                tracker={tracker}
+                status={check.status}
+                checking={check.loading}
+                failed={check.failed}
+                variant="result"
+                style={styles.redStatusRow}
+              />
+            ) : null;
+          })}
           <View style={styles.resultActions}>
             <Button mode="outlined" onPress={handleDismiss}>
               Dismiss

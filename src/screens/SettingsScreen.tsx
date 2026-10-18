@@ -11,12 +11,13 @@ const appIcon = require('../../assets/play-store-icon.png');
 
 export default function SettingsScreen() {
   const theme = useTheme();
-  const { settings, updateToken, updateThemeMode, updateRedApiKey, setFrogMode } = useSettings();
+  const { settings, updateToken, updateThemeMode, updateRedApiKey, updateOpsApiKey, setFrogMode } = useSettings();
   const { albums } = useCollection();
   const [aboutVisible, setAboutVisible] = useState(false);
   // Keys are saved when editing ends, so a half-typed key is never used
   const [token, setToken] = useState(settings.discogsToken);
   const [redApiKey, setRedApiKey] = useState(settings.redApiKey);
+  const [opsApiKey, setOpsApiKey] = useState(settings.opsApiKey);
 
   // Follow the saved values, which can load after this screen mounts
   useEffect(() => {
@@ -26,6 +27,10 @@ export default function SettingsScreen() {
   useEffect(() => {
     setRedApiKey(settings.redApiKey);
   }, [settings.redApiKey]);
+
+  useEffect(() => {
+    setOpsApiKey(settings.opsApiKey);
+  }, [settings.opsApiKey]);
 
   return (
     <ScrollView
@@ -92,6 +97,39 @@ export default function SettingsScreen() {
               style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
             >
               Current key prefix: {settings.redApiKey.slice(0, 8)}
+            </Text>
+          )}
+        </View>
+      </List.Section>
+
+      <Divider />
+
+      <List.Section>
+        <List.Subheader>OPS (Orpheus)</List.Subheader>
+        <View style={styles.inputContainer}>
+          <TextInput
+            label="API Token"
+            value={opsApiKey}
+            onChangeText={setOpsApiKey}
+            onBlur={() => updateOpsApiKey(opsApiKey.trim())}
+            mode="outlined"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            right={<TextInput.Icon icon="key" />}
+          />
+          <Text
+            variant="bodySmall"
+            style={[styles.hint, { color: theme.colors.onSurfaceVariant }]}
+          >
+            Create an API token in your OPS user settings. It has full access to your account, so revoke it if you lose this phone. Using Scout doesn't count as site activity, so keep logging in to OPS in a browser.
+          </Text>
+          {settings.opsApiKey.length > 0 && (
+            <Text
+              variant="bodySmall"
+              style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
+            >
+              Current key prefix: {settings.opsApiKey.slice(0, 8)}
             </Text>
           )}
         </View>

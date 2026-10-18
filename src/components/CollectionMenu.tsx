@@ -9,12 +9,13 @@ import {
 } from 'react-native';
 import { Appbar, List, Portal, useTheme } from 'react-native-paper';
 import type { LayoutRectangle } from 'react-native';
+import { TRACKERS, type TrackerId } from '../services/gazelle';
 
 interface Props {
   onSelectAll: () => void;
-  onSelectNotOnRed: () => void;
-  onSelectNoRedStatus: () => void;
-  hasRedApiKey: boolean;
+  onSelectNotOnTracker: (tracker: TrackerId) => void;
+  onSelectNoTrackerStatus: (tracker: TrackerId) => void;
+  trackers: TrackerId[];  // The trackers with an API key
   disabled: boolean;
 }
 
@@ -23,9 +24,9 @@ const EASING = Easing.bezier(0.4, 0, 0.2, 1);
 
 export default function CollectionMenu({
   onSelectAll,
-  onSelectNotOnRed,
-  onSelectNoRedStatus,
-  hasRedApiKey,
+  onSelectNotOnTracker,
+  onSelectNoTrackerStatus,
+  trackers,
   disabled,
 }: Props) {
   const theme = useTheme();
@@ -123,22 +124,22 @@ export default function CollectionMenu({
               onPress={makeHandler(onSelectAll)}
               style={styles.item}
             />
-            {hasRedApiKey && (
-              <>
+            {trackers.map((tracker) => (
+              <React.Fragment key={tracker}>
                 <List.Item
-                  title="Select items not on RED"
+                  title={`Select items not on ${TRACKERS[tracker].name}`}
                   left={(props) => <List.Icon {...props} icon="progress-upload" />}
-                  onPress={makeHandler(onSelectNotOnRed)}
+                  onPress={makeHandler(() => onSelectNotOnTracker(tracker))}
                   style={styles.item}
                 />
                 <List.Item
-                  title="Select items missing RED data"
+                  title={`Select items missing ${TRACKERS[tracker].name} data`}
                   left={(props) => <List.Icon {...props} icon="help-circle-outline" />}
-                  onPress={makeHandler(onSelectNoRedStatus)}
+                  onPress={makeHandler(() => onSelectNoTrackerStatus(tracker))}
                   style={styles.item}
                 />
-              </>
-            )}
+              </React.Fragment>
+            ))}
           </Animated.View>
         </Portal>
       )}

@@ -8,7 +8,19 @@ import * as Haptics from 'expo-haptics';
 import { useCollection } from '../context/CollectionContext';
 import { useSettings } from '../context/SettingsContext';
 import { useRedError } from '../context/RedErrorContext';
-import { getTrackerStatus, TrackerAuthError, TrackerForbiddenError, TrackerUnavailableError } from '../services/gazelle';
+import {
+  getTrackerStatus,
+  apiKeyFor,
+  configuredTrackers,
+  trackerNames,
+  trackerStatus,
+  STATUS_FIELD,
+  TRACKERS,
+  TrackerAuthError,
+  TrackerForbiddenError,
+  TrackerUnavailableError,
+  type TrackerId,
+} from '../services/gazelle';
 import { fetchReleaseDetail, searchByBarcode, discogsErrorMessage } from '../services/discogs';
 import { albumFromRelease } from '../services/album';
 import { DEFAULT_LIST_ID, albumListId, countByList, findList } from '../services/lists';
@@ -33,7 +45,8 @@ export default function CollectionScreen() {
   const [redLookupLoading, setRedLookupLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const refreshingRef = useRef(false);
-  const [redSearchingIds, setRedSearchingIds] = useState<Set<string>>(new Set());
+  const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
+  const [checkingTrackers, setCheckingTrackers] = useState<TrackerId[]>([]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [pressingAlbum, setPressingAlbum] = useState<Album | null>(null);
   const [pressingCandidates, setPressingCandidates] = useState<DiscogsSearchResult[]>([]);
@@ -50,6 +63,7 @@ export default function CollectionScreen() {
     [albums, activeList.id],
   );
   const listCounts = useMemo(() => countByList(albums), [albums]);
+  const trackers = useMemo(() => configuredTrackers(settings), [settings]);
 
   const exitSelectionMode = useCallback(() => {
     setSelectionMode(false);
@@ -139,30 +153,40 @@ export default function CollectionScreen() {
     enterSelectionWithIds(visibleAlbums.map((a) => a.id));
   }, [visibleAlbums, enterSelectionWithIds]);
 
-  const handleSelectNotOnRed = useCallback(() => {
-    const ids = visibleAlbums.filter((a) => a.redStatus && !a.redStatus.uploaded).map((a) => a.id);
+  const handleSelectNotOnTracker = useCallback((tracker: TrackerId) => {
+    const ids = visibleAlbums.filter((a) => trackerStatus(a, tracker)?.uploaded === false).map((a) => a.id);
     if (!enterSelectionWithIds(ids)) {
-      setSnackbar('No items are marked as not on RED');
+      setSnackbar(`No items are marked as not on ${TRACKERS[tracker].name}`);
     }
   }, [visibleAlbums, enterSelectionWithIds]);
 
-  const handleSelectNoRedStatus = useCallback(() => {
-    const ids = visibleAlbums.filter((a) => !a.redStatus).map((a) => a.id);
+  const handleSelectNoTrackerStatus = useCallback((tracker: TrackerId) => {
+    const ids = visibleAlbums.filter((a) => !trackerStatus(a, tracker)).map((a) => a.id);
     if (!enterSelectionWithIds(ids)) {
-      setSnackbar('All items have been checked on RED');
+      setSnackbar(`All items have been checked on ${TRACKERS[tracker].name}`);
     }
   }, [visibleAlbums, enterSelectionWithIds]);
 
-  const lookupRedStatuses = useCallback(async (albumsToCheck: Album[]) => {
-    const apiKey = settings.redApiKey;
+  // Fetches each release from Discogs once, then checks it on every tracker with a key.
+  // A tracker that fails stops being checked, while the others carry on.
+  const lookupTrackerStatuses = useCallback(async (albumsToCheck: Album[]) => {
     const token = settings.discogsToken || undefined;
-    if (!apiKey || albumsToCheck.length === 0) return { updated: 0, stopped: false };
+    let active = configuredTrackers(settings);
+    if (active.length === 0 || albumsToCheck.length === 0) return { updated: 0, stopped: false };
 
-    setRedSearchingIds(new Set(albumsToCheck.map((a) => a.id)));
+    setCheckingIds(new Set(albumsToCheck.map((a) => a.id)));
+    setCheckingTrackers(active);
     let updated = 0;
     let stopped = false;
 
+    const stopTracker = (tracker: TrackerId) => {
+      active = active.filter((t) => t !== tracker);
+      setCheckingTrackers(active);
+      stopped = true;
+    };
+
     for (const album of albumsToCheck) {
+      if (active.length === 0) break;
       try {
         const detail = await fetchReleaseDetail(album.discogsId, token);
         if (!detail) continue;
@@ -170,31 +194,27 @@ export default function CollectionScreen() {
         if (!detail.artistDisplay || detail.artistDisplay === 'Unknown') {
           detail.artistDisplay = album.artist;
         }
-        const status = await getTrackerStatus('red', detail, apiKey);
-        updateAlbum(album.id, { redStatus: status });
-        updated++;
-      } catch (err) {
-        if (err instanceof TrackerAuthError) {
-          setRedSearchingIds(new Set());
-          showRedError(err.title, err.message);
-          stopped = true;
-          break;
-        }
-        if (err instanceof TrackerForbiddenError) {
-          setRedSearchingIds(new Set());
-          showRedError(err.title, err.message);
-          stopped = true;
-          break;
-        }
-        if (err instanceof TrackerUnavailableError) {
-          setRedSearchingIds(new Set());
-          setSnackbar(err.message);
-          stopped = true;
-          break;
-        }
+        const results = await Promise.all(active.map(async (tracker) => {
+          try {
+            const status = await getTrackerStatus(tracker, detail, apiKeyFor(settings, tracker));
+            updateAlbum(album.id, { [STATUS_FIELD[tracker]]: status });
+            return true;
+          } catch (err) {
+            if (err instanceof TrackerAuthError || err instanceof TrackerForbiddenError) {
+              stopTracker(tracker);
+              showRedError(err.title, err.message);
+            } else if (err instanceof TrackerUnavailableError) {
+              stopTracker(tracker);
+              setSnackbar(err.message);
+            }
+            return false;
+          }
+        }));
+        if (results.some(Boolean)) updated++;
+      } catch {
         // Continue with remaining items on other failures
       } finally {
-        setRedSearchingIds((prev) => {
+        setCheckingIds((prev) => {
           const next = new Set(prev);
           next.delete(album.id);
           return next;
@@ -202,10 +222,11 @@ export default function CollectionScreen() {
       }
     }
 
+    setCheckingIds(new Set());
     return { updated, stopped };
-  }, [settings.redApiKey, settings.discogsToken, showRedError, updateAlbum]);
+  }, [settings, showRedError, updateAlbum]);
 
-  const handleLookupRed = useCallback(async () => {
+  const handleLookup = useCallback(async () => {
     if (refreshing) return;
 
     const selected = visibleAlbums.filter((a) => selectedIds.has(a.id));
@@ -213,34 +234,34 @@ export default function CollectionScreen() {
 
     setRedLookupLoading(true);
     try {
-      const { updated, stopped } = await lookupRedStatuses(selected);
+      const { updated, stopped } = await lookupTrackerStatuses(selected);
       if (!stopped) {
-        setSnackbar(`Updated RED status for ${updated} item${updated !== 1 ? 's' : ''}`);
+        setSnackbar(`Updated ${trackerNames(trackers)} status for ${updated} item${updated !== 1 ? 's' : ''}`);
       }
     } finally {
       setRedLookupLoading(false);
     }
-  }, [visibleAlbums, selectedIds, refreshing, lookupRedStatuses]);
+  }, [visibleAlbums, selectedIds, refreshing, trackers, lookupTrackerStatuses]);
 
   const handleRefresh = useCallback(async () => {
     if (selectionMode || redLookupLoading || refreshing) return;
-    if (!settings.redApiKey) {
-      setSnackbar('Add a RED API key in Settings to refresh RED statuses');
+    if (trackers.length === 0) {
+      setSnackbar('Add a RED or OPS API key in Settings to refresh statuses');
       return;
     }
 
     setRefreshing(true);
     refreshingRef.current = true;
     try {
-      const { updated, stopped } = await lookupRedStatuses(visibleAlbums);
+      const { updated, stopped } = await lookupTrackerStatuses(visibleAlbums);
       if (!stopped) {
-        setSnackbar(`Refreshed RED status for ${updated} item${updated !== 1 ? 's' : ''}`);
+        setSnackbar(`Refreshed ${trackerNames(trackers)} status for ${updated} item${updated !== 1 ? 's' : ''}`);
       }
     } finally {
       refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, [visibleAlbums, selectionMode, redLookupLoading, refreshing, settings.redApiKey, lookupRedStatuses]);
+  }, [visibleAlbums, selectionMode, redLookupLoading, refreshing, trackers, lookupTrackerStatuses]);
 
   // AlbumCard's memo can keep an old onChoosePressing, so it reads these from refs
   const discogsTokenRef = useRef(settings.discogsToken);
@@ -250,18 +271,18 @@ export default function CollectionScreen() {
 
   const handleChoosePressing = useCallback(async (album: Album) => {
     if (choosingPressingRef.current) return;
-    // A RED check that is still running would save a status for the old pressing
+    // A tracker check that is still running would save a status for the old pressing
     if (redBusyRef.current) {
-      setSnackbar('Wait for the RED check to finish');
+      setSnackbar('Wait for the tracker check to finish');
       return;
     }
     choosingPressingRef.current = true;
     setPressingLoadingId(album.id);
     try {
       const results = await searchByBarcode(album.barcode, discogsTokenRef.current || undefined);
-      // A RED check may have started while searching
+      // A tracker check may have started while searching
       if (redBusyRef.current) {
-        setSnackbar('Wait for the RED check to finish');
+        setSnackbar('Wait for the tracker check to finish');
         return;
       }
       const releases = results.filter((r) => r.type === 'release');
@@ -302,18 +323,18 @@ export default function CollectionScreen() {
       setPickerError({ id: selected.id, message: 'Release details are unavailable on Discogs for this pressing. This is usually due to an issue with Discogs. Please select another pressing.', removable: true });
       return;
     }
-    const changes = { ...albumFromRelease(selected, detail), pressingConfirmed: undefined, redStatus: undefined };
+    const changes = { ...albumFromRelease(selected, detail), pressingConfirmed: undefined, redStatus: undefined, opsStatus: undefined };
     updateAlbum(album.id, changes);
     setPressingAlbum(null);
     setSnackbar('Pressing updated');
-    // The RED status was for the old pressing, so check the new one
+    // The tracker statuses were for the old pressing, so check the new one
     setRedLookupLoading(true);
     try {
-      await lookupRedStatuses([{ ...album, ...changes }]);
+      await lookupTrackerStatuses([{ ...album, ...changes }]);
     } finally {
       setRedLookupLoading(false);
     }
-  }, [pressingAlbum, settings.discogsToken, updateAlbum, lookupRedStatuses]);
+  }, [pressingAlbum, settings.discogsToken, updateAlbum, lookupTrackerStatuses]);
 
   const handlePickerErrorDismiss = useCallback(() => {
     if (pickerError?.removable) {
@@ -383,7 +404,8 @@ export default function CollectionScreen() {
         isSelected={selectedIds.has(item.id)}
         selectionMode={selectionMode}
         frogModeActive={settings.frogModeActive}
-        redSearching={redSearchingIds.has(item.id)}
+        hasRedApiKey={!!settings.redApiKey}
+        checkingTrackers={checkingIds.has(item.id) ? checkingTrackers : undefined}
         pressingLoading={pressingLoadingId === item.id}
         onPress={() => (selectionMode ? toggleSelect(item.id) : undefined)}
         onLongPress={() => !selectionMode && enterSelectionMode(item.id)}
@@ -391,7 +413,7 @@ export default function CollectionScreen() {
         onChoosePressing={handleChoosePressing}
       />
     ),
-    [selectionMode, selectedIds, expandedIds, toggleSelect, toggleExpand, enterSelectionMode, settings.frogModeActive, redSearchingIds, pressingLoadingId, handleChoosePressing],
+    [selectionMode, selectedIds, expandedIds, toggleSelect, toggleExpand, enterSelectionMode, settings.frogModeActive, settings.redApiKey, checkingIds, checkingTrackers, pressingLoadingId, handleChoosePressing],
   );
 
   const keyExtractor = useCallback((item: Album) => item.id, []);
@@ -403,9 +425,9 @@ export default function CollectionScreen() {
           <Appbar.Content title={activeList.name} />
           <CollectionMenu
             onSelectAll={handleSelectAll}
-            onSelectNotOnRed={handleSelectNotOnRed}
-            onSelectNoRedStatus={handleSelectNoRedStatus}
-            hasRedApiKey={!!settings.redApiKey}
+            onSelectNotOnTracker={handleSelectNotOnTracker}
+            onSelectNoTrackerStatus={handleSelectNoTrackerStatus}
+            trackers={trackers}
             disabled={loadError || visibleAlbums.length === 0 || refreshing}
           />
         </Appbar.Header>
@@ -416,9 +438,9 @@ export default function CollectionScreen() {
               onDelete={handleDelete}
               onCancel={exitSelectionMode}
               onMove={() => setMoveDialogVisible(true)}
-              onLookupRed={handleLookupRed}
-              redLookupLoading={redLookupLoading || refreshing}
-              hasRedApiKey={!!settings.redApiKey}
+              onLookup={handleLookup}
+              lookupLoading={redLookupLoading || refreshing}
+              trackerNames={trackerNames(trackers)}
             />
           </View>
         )}

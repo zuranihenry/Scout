@@ -6,9 +6,9 @@ interface Props {
   onDelete: () => void;
   onCancel: () => void;
   onMove: () => void;
-  onLookupRed: () => void;
-  redLookupLoading: boolean;
-  hasRedApiKey: boolean;
+  onLookup: () => void;
+  lookupLoading: boolean;
+  trackerNames: string;  // The trackers to search, or empty for none
 }
 
 export default function SelectionToolbar({
@@ -16,9 +16,9 @@ export default function SelectionToolbar({
   onDelete,
   onCancel,
   onMove,
-  onLookupRed,
-  redLookupLoading,
-  hasRedApiKey,
+  onLookup,
+  lookupLoading,
+  trackerNames,
 }: Props) {
   const theme = useTheme();
 
@@ -26,16 +26,16 @@ export default function SelectionToolbar({
     <Appbar.Header statusBarHeight={0} style={{ backgroundColor: theme.colors.elevation.level2 }}>
       <Appbar.Action icon="close" onPress={onCancel} accessibilityLabel="Cancel selection" />
       <Appbar.Content title={`${count} selected`} />
-      {hasRedApiKey && (
+      {!!trackerNames && (
         <Button
           mode="text"
-          onPress={onLookupRed}
-          loading={redLookupLoading}
-          disabled={redLookupLoading || count === 0}
+          onPress={onLookup}
+          loading={lookupLoading}
+          disabled={lookupLoading || count === 0}
           icon="magnify"
           compact
         >
-          Search on RED
+          {`Search on ${trackerNames}`}
         </Button>
       )}
       <Appbar.Action icon="folder-move-outline" onPress={onMove} accessibilityLabel="Move to another list" />
